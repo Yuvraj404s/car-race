@@ -27,8 +27,8 @@ const ENEMY_COLORS = [
   { body:"#e67e22", roof:"#ca6f1e", window:"#fdebd0" },
 ];
 
-// ── API base (set to your deployed server URL in production) ───────────────────
-const API = import.meta.env.VITE_API_URL || "http://localhost:3001";
+// ── API — relative path, works on Vercel (prod) and via Vite proxy (local dev) ─
+const API = "/api";
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 const lerp  = (a, b, t) => a + (b - a) * t;
