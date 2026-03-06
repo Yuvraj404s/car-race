@@ -534,6 +534,7 @@ export default function App() {
   const [selectedCar,  setSelected] = useState(() => localStorage.getItem("racer_car") || "red");
   const [modal,      setModal]      = useState(null); // null | "leaderboard" | "garage"
   const [isGameOver,  setIsGameOver] = useState(false);  // true = show revive overlay
+  const [adState,     setAdState]    = useState("idle"); // idle | loading | skipped | error
 
   // Persist
   useEffect(() => { localStorage.setItem("racer_hs",      highScore); },   [highScore]);
@@ -567,33 +568,29 @@ export default function App() {
     soundRef.current?.startEngine();
   }, [initState]);
 
-  // Revive — reset player position/lives, keep score, resume loop
-  const revive = useCallback(() => {
+  // ── Core revive logic — only called AFTER ad is confirmed watched ───────────
+  const doRevive = useCallback(() => {
     const s = stateRef.current;
     if (!s) return;
-
-    // Reset player to center lane, bottom of screen
-    s.player.x         = ROAD_LEFT + LANE_WIDTH + (LANE_WIDTH - CAR_W) / 2;
-    s.player.y         = Y_DEFAULT;
+    s.player.x          = ROAD_LEFT + LANE_WIDTH + (LANE_WIDTH - CAR_W) / 2;
+    s.player.y          = Y_DEFAULT;
     s.player.targetLane = 1;
-    s.player.vy        = 0;
-    s.player.jumpZ     = 0;
-    s.player.jumpVel   = 0;
-    s.player.isJumping = false;
+    s.player.vy         = 0;
+    s.player.jumpZ      = 0;
+    s.player.jumpVel    = 0;
+    s.player.isJumping  = false;
     s.player.jumpCooldown = 0;
-
-    // Give 1 life back, clear enemies & give 3s invincibility frames
     s.lives      = 1;
     s.enemies    = [];
-    s.invincible = 180;
+    s.invincible = 180;  // 3s grace period
     s.shake      = 0;
     s.running    = true;
-
     setIsGameOver(false);
+    setAdState("idle");
     soundRef.current?.startEngine();
   }, []);
 
-  // Hard game over — save coins/score and go to gameover screen
+  // ── Hard game over — save progress and go to gameover screen ─────────────
   const triggerGameOver = useCallback(() => {
     const s = stateRef.current;
     setFinalScore(s?.score ?? 0);
@@ -608,8 +605,93 @@ export default function App() {
       return next;
     });
     setIsGameOver(false);
+    setAdState("idle");
     setScreen("gameover");
   }, []);
+
+  // ══════════════════════════════════════════════════════════════════
+  // REWARDED AD HANDLER
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // HOW THE FLOW WORKS:
+  //   Player dies → isGameOver=true → overlay shows "Watch Ad to Revive"
+  //   Player taps → handleRevive() → SDK shows video ad
+  //   Ad completes → onAdComplete fires → doRevive() (reset + resume)
+  //   Ad skipped   → onAdSkipped  fires → deny revive, show "Try Again"
+  //   Ad error     → onAdError    fires → show "No Ad Available"
+  //
+  // SECURITY: doRevive() is ONLY ever called inside onAdComplete.
+  // The player cannot revive without earning the ad revenue.
+  //
+  const handleRevive = useCallback(() => {
+    if (adState === "loading") return; // prevent double-tap
+
+    // ── OPTION A: AdinPlay ─────────────────────────────────────────
+    // Docs: https://adinplay.com/documentation
+    // window.aiptag is pre-initialised in index.html before the async
+    // script loads, so cmd.player is always an array we can push to.
+    const aiptag = window.aiptag;
+
+    if (aiptag && aiptag.adplayer) {
+      setAdState("loading");
+      try {
+        aiptag.cmd.player.push(() => {
+          aiptag.adplayer.startPreRoll({
+            // ✅ Full view — grant the revive
+            onAdComplete: () => {
+              console.log("[Ad] Completed → reviving player");
+              doRevive();
+            },
+            // ❌ Player bailed — do NOT revive
+            onAdSkipped: () => {
+              console.log("[Ad] Skipped → revive denied");
+              setAdState("skipped");
+            },
+            // ⚠ Network / no fill — inform player, don't punish
+            onAdError: (err) => {
+              console.warn("[Ad] Error:", err);
+              setAdState("error");
+            },
+          });
+        });
+      } catch (e) {
+        console.error("[Ad] SDK threw:", e);
+        setAdState("error");
+      }
+      return;
+    }
+
+    // ── OPTION B: AppLixir ─────────────────────────────────────────
+    // Uncomment this block and comment out Option A above.
+    // Get your zoneId from https://applixir.com dashboard.
+    //
+    // if (window.applixir) {
+    //   setAdState("loading");
+    //   window.applixir.showAd({
+    //     zoneId: "YOUR-ZONE-ID",           // ← replace with your zone ID
+    //     onAdComplete: () => {
+    //       console.log("[Ad] AppLixir complete → reviving");
+    //       doRevive();
+    //     },
+    //     onAdSkipped: () => {
+    //       console.log("[Ad] AppLixir skipped");
+    //       setAdState("skipped");
+    //     },
+    //     onAdError: () => {
+    //       console.warn("[Ad] AppLixir error");
+    //       setAdState("error");
+    //     },
+    //   });
+    //   return;
+    // }
+
+    // ── FALLBACK: SDK not loaded (localhost dev / ad blocker) ──────
+    // This only runs when NEITHER SDK is available.
+    // Safe to leave in — it will never fire on a real deployed game
+    // where the script tag in index.html loads correctly.
+    console.warn("[Ad] No SDK found — free revive (dev/blocked mode)");
+    doRevive();
+  }, [adState, doRevive]);
 
   // Keyboard
   useEffect(() => {
@@ -870,46 +952,85 @@ export default function App() {
         {isGameOver && (
           <div style={{
             position:"absolute", inset:0, borderRadius:16,
-            background:"rgba(5,5,15,0.82)",
+            background:"rgba(5,5,15,0.85)",
             display:"flex", flexDirection:"column",
             alignItems:"center", justifyContent:"center",
-            gap:18, zIndex:20,
-            backdropFilter:"blur(3px)",
+            gap:16, zIndex:20, backdropFilter:"blur(3px)",
+            fontFamily:"'Courier New',monospace",
           }}>
-            {/* Skull icon */}
-            <div style={{ fontSize:64, lineHeight:1, filter:"drop-shadow(0 0 24px #e74c3c)" }}>💀</div>
+            <div style={{ fontSize:60, lineHeight:1, filter:"drop-shadow(0 0 24px #e74c3c)" }}>💀</div>
 
             <div style={{ fontSize:32, fontWeight:900, color:"#e74c3c",
-              fontFamily:"'Courier New',monospace",
               filter:"drop-shadow(0 0 12px #e74c3c)", letterSpacing:"0.08em" }}>
               YOU DIED
             </div>
 
-            <div style={{ color:"#f5c518", fontFamily:"'Courier New',monospace", fontSize:15 }}>
+            <div style={{ color:"#f5c518", fontSize:15 }}>
               SCORE: <strong>{finalScore.toString().padStart(6,"0")}</strong>
             </div>
 
-            {/* Revive button */}
-            <button onClick={revive} style={{
-              padding:"16px 52px", fontSize:20, fontWeight:900,
-              fontFamily:"'Courier New',monospace",
-              background:"linear-gradient(135deg,#2ecc71,#27ae60)",
-              color:"#fff", border:"none", borderRadius:12, cursor:"pointer",
-              boxShadow:"0 0 30px rgba(46,204,113,0.6)",
-              letterSpacing:"0.08em",
-            }}>
-              ♻ REVIVE
-            </button>
-            <div style={{ color:"#555", fontSize:11, fontFamily:"'Courier New',monospace" }}>
-              keeps your score &amp; coins
+            {/* ── Revive button — states: idle / loading / skipped / error ── */}
+            {adState === "idle" && (
+              <button onClick={handleRevive} style={{
+                padding:"16px 44px", fontSize:20, fontWeight:900,
+                background:"linear-gradient(135deg,#2ecc71,#27ae60)",
+                color:"#fff", border:"none", borderRadius:12, cursor:"pointer",
+                boxShadow:"0 0 30px rgba(46,204,113,0.6)", letterSpacing:"0.06em",
+              }}>
+                📺 WATCH AD TO REVIVE
+              </button>
+            )}
+
+            {adState === "loading" && (
+              <div style={{
+                padding:"16px 44px", fontSize:16, fontWeight:700,
+                background:"rgba(46,204,113,0.15)",
+                color:"#2ecc71", border:"2px solid #2ecc7160",
+                borderRadius:12, letterSpacing:"0.06em",
+              }}>
+                ⏳ Loading Ad...
+              </div>
+            )}
+
+            {adState === "skipped" && (
+              <div style={{ textAlign:"center" }}>
+                <div style={{ color:"#e74c3c", fontSize:13, marginBottom:10 }}>
+                  ⚠ Ad skipped — revive not granted
+                </div>
+                <button onClick={() => setAdState("idle")} style={{
+                  padding:"12px 32px", fontSize:15, fontWeight:700,
+                  background:"linear-gradient(135deg,#2ecc71,#27ae60)",
+                  color:"#fff", border:"none", borderRadius:10, cursor:"pointer",
+                }}>
+                  Try Again
+                </button>
+              </div>
+            )}
+
+            {adState === "error" && (
+              <div style={{ textAlign:"center" }}>
+                <div style={{ color:"#e67e22", fontSize:13, marginBottom:10 }}>
+                  ⚠ No ad available right now
+                </div>
+                <button onClick={() => setAdState("idle")} style={{
+                  padding:"12px 32px", fontSize:15, fontWeight:700,
+                  background:"rgba(255,255,255,0.08)",
+                  color:"#aaa", border:"1px solid #444", borderRadius:10, cursor:"pointer",
+                }}>
+                  Retry
+                </button>
+              </div>
+            )}
+
+            <div style={{ color:"#444", fontSize:10 }}>
+              {adState === "idle" ? "watch a short ad · keeps your score & coins" : ""}
             </div>
 
-            {/* Hard quit */}
+            {/* Hard quit — always visible */}
             <button onClick={triggerGameOver} style={{
-              padding:"10px 28px", fontSize:13, fontWeight:700,
-              fontFamily:"'Courier New',monospace",
-              background:"transparent", color:"#555",
-              border:"1px solid #333", borderRadius:8, cursor:"pointer",
+              marginTop:4, padding:"9px 24px", fontSize:12, fontWeight:700,
+              background:"transparent", color:"#444",
+              border:"1px solid #2a2a2a", borderRadius:8, cursor:"pointer",
             }}>
               End Run
             </button>

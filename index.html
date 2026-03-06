@@ -8,6 +8,51 @@
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #05050f; overflow: hidden; }
     </style>
+
+    <!--
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║              REWARDED VIDEO AD SETUP — READ THIS FIRST           ║
+    ╠══════════════════════════════════════════════════════════════════╣
+    ║                                                                  ║
+    ║  OPTION A: AdinPlay (recommended for HTML5 games)                ║
+    ║  ─────────────────────────────────────────────                   ║
+    ║  1. Sign up at https://adinplay.com                              ║
+    ║  2. Create a game — you'll get a Publisher ID like:              ║
+    ║       ABC123/infinite-racer                                      ║
+    ║  3. Replace YOUR-PUBLISHER-ID below with it                      ║
+    ║  4. The JS call in App.jsx (handleRevive) is already wired       ║
+    ║                                                                  ║
+    ║  OPTION B: AppLixir (alternative)                                ║
+    ║  ─────────────────────────────────────────────                   ║
+    ║  1. Sign up at https://applixir.com                              ║
+    ║  2. Get your Zone ID                                             ║
+    ║  3. Comment out the AdinPlay script below, uncomment AppLixir    ║
+    ║  4. In App.jsx, swap the handleRevive function body              ║
+    ║     (the AppLixir version is commented out right there)          ║
+    ║                                                                  ║
+    ║  LOCAL DEV NOTE:                                                 ║
+    ║  The SDK won't load on localhost. The game auto-falls back to    ║
+    ║  a free revive so you can test without a real publisher ID.      ║
+    ║  This is safe — the fallback only fires when window.aiptag       ║
+    ║  is undefined (i.e. SDK not loaded).                             ║
+    ║                                                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+    -->
+
+    <!-- ── OPTION A: AdinPlay ─────────────────────────────────────── -->
+    <!-- Replace YOUR-PUBLISHER-ID with your real ID from the dashboard -->
+    <script>
+      window.aiptag = window.aiptag || { cmd: { player: [] } };
+    </script>
+    <script
+      async
+      src="https://api.adinplay.com/libs/aiptag/pub/YOUR-PUBLISHER-ID/aip.min.js"
+    ></script>
+
+    <!-- ── OPTION B: AppLixir (comment out AdinPlay above first) ──── -->
+    <!--
+    <script async src="https://cdn.applixir.com/applixir.tech.v4.0.min.js"></script>
+    -->
   </head>
   <body>
     <div id="root"></div>
