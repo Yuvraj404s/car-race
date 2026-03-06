@@ -533,6 +533,7 @@ export default function App() {
   const [unlockedCars, setUnlocked] = useState(() => JSON.parse(localStorage.getItem("racer_unlocked") || '["red"]'));
   const [selectedCar,  setSelected] = useState(() => localStorage.getItem("racer_car") || "red");
   const [modal,      setModal]      = useState(null); // null | "leaderboard" | "garage"
+  const [isGameOver,  setIsGameOver] = useState(false);  // true = show revive overlay
 
   // Persist
   useEffect(() => { localStorage.setItem("racer_hs",      highScore); },   [highScore]);
@@ -561,9 +562,54 @@ export default function App() {
 
   const startGame = useCallback(() => {
     stateRef.current = initState();
+    setIsGameOver(false);
     setScreen("playing");
     soundRef.current?.startEngine();
   }, [initState]);
+
+  // Revive — reset player position/lives, keep score, resume loop
+  const revive = useCallback(() => {
+    const s = stateRef.current;
+    if (!s) return;
+
+    // Reset player to center lane, bottom of screen
+    s.player.x         = ROAD_LEFT + LANE_WIDTH + (LANE_WIDTH - CAR_W) / 2;
+    s.player.y         = Y_DEFAULT;
+    s.player.targetLane = 1;
+    s.player.vy        = 0;
+    s.player.jumpZ     = 0;
+    s.player.jumpVel   = 0;
+    s.player.isJumping = false;
+    s.player.jumpCooldown = 0;
+
+    // Give 1 life back, clear enemies & give 3s invincibility frames
+    s.lives      = 1;
+    s.enemies    = [];
+    s.invincible = 180;
+    s.shake      = 0;
+    s.running    = true;
+
+    setIsGameOver(false);
+    soundRef.current?.startEngine();
+  }, []);
+
+  // Hard game over — save coins/score and go to gameover screen
+  const triggerGameOver = useCallback(() => {
+    const s = stateRef.current;
+    setFinalScore(s?.score ?? 0);
+    setHighScore(prev => {
+      const next = Math.max(prev, s?.score ?? 0);
+      localStorage.setItem("racer_hs", next);
+      return next;
+    });
+    setTotalCoins(prev => {
+      const next = prev + (s?.sessionCoins ?? 0);
+      localStorage.setItem("racer_coins", next);
+      return next;
+    });
+    setIsGameOver(false);
+    setScreen("gameover");
+  }, []);
 
   // Keyboard
   useEffect(() => {
@@ -609,7 +655,17 @@ export default function App() {
 
     const loop = () => {
       const s = stateRef.current;
-      if (!s||!s.running) return;
+      if (!s) return;
+
+      // When paused for revive: keep drawing the frozen frame but skip updates
+      if (!s.running) {
+        const canvas2 = canvasRef.current;
+        if (canvas2) {
+          // Just re-queue — the revive overlay is rendered in React
+          animRef.current = requestAnimationFrame(loop);
+        }
+        return;
+      }
       const k=keysRef.current, p=s.player;
 
       // Lane
@@ -688,20 +744,11 @@ export default function App() {
             burst(e.x+CAR_W/2,e.y+CAR_H/2,e.colors.body,16);
             snd?.playCrash();
             if(s.lives<=0){
+              // Pause loop — show revive overlay instead of full game over
               s.running=false;
               snd?.stopEngine();
               setFinalScore(s.score);
-              setHighScore(prev=>{
-                const next=Math.max(prev,s.score);
-                localStorage.setItem("racer_hs",next);
-                return next;
-              });
-              setTotalCoins(prev=>{
-                const next=prev+s.sessionCoins;
-                localStorage.setItem("racer_coins",next);
-                return next;
-              });
-              setScreen("gameover");
+              setIsGameOver(true);
               return;
             }
             break;
@@ -818,6 +865,56 @@ export default function App() {
           fontSize:10,textAlign:"right",lineHeight:1.7,pointerEvents:"none" }}>
           ← → LANES<br/>↑ ↓ MOVE<br/>SPACE JUMP
         </div>
+
+        {/* ── Revive Overlay ── */}
+        {isGameOver && (
+          <div style={{
+            position:"absolute", inset:0, borderRadius:16,
+            background:"rgba(5,5,15,0.82)",
+            display:"flex", flexDirection:"column",
+            alignItems:"center", justifyContent:"center",
+            gap:18, zIndex:20,
+            backdropFilter:"blur(3px)",
+          }}>
+            {/* Skull icon */}
+            <div style={{ fontSize:64, lineHeight:1, filter:"drop-shadow(0 0 24px #e74c3c)" }}>💀</div>
+
+            <div style={{ fontSize:32, fontWeight:900, color:"#e74c3c",
+              fontFamily:"'Courier New',monospace",
+              filter:"drop-shadow(0 0 12px #e74c3c)", letterSpacing:"0.08em" }}>
+              YOU DIED
+            </div>
+
+            <div style={{ color:"#f5c518", fontFamily:"'Courier New',monospace", fontSize:15 }}>
+              SCORE: <strong>{finalScore.toString().padStart(6,"0")}</strong>
+            </div>
+
+            {/* Revive button */}
+            <button onClick={revive} style={{
+              padding:"16px 52px", fontSize:20, fontWeight:900,
+              fontFamily:"'Courier New',monospace",
+              background:"linear-gradient(135deg,#2ecc71,#27ae60)",
+              color:"#fff", border:"none", borderRadius:12, cursor:"pointer",
+              boxShadow:"0 0 30px rgba(46,204,113,0.6)",
+              letterSpacing:"0.08em",
+            }}>
+              ♻ REVIVE
+            </button>
+            <div style={{ color:"#555", fontSize:11, fontFamily:"'Courier New',monospace" }}>
+              keeps your score &amp; coins
+            </div>
+
+            {/* Hard quit */}
+            <button onClick={triggerGameOver} style={{
+              padding:"10px 28px", fontSize:13, fontWeight:700,
+              fontFamily:"'Courier New',monospace",
+              background:"transparent", color:"#555",
+              border:"1px solid #333", borderRadius:8, cursor:"pointer",
+            }}>
+              End Run
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── MENU ── */}
