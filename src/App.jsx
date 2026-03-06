@@ -281,140 +281,184 @@ function LeaderboardModal({ onClose, playerScore }) {
   const [status, setStatus]   = useState("idle");
   const [rank, setRank]       = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState(null);
+  const [submitErr, setSubmitErr] = useState("");
+  const [debugInfo, setDebugInfo] = useState("");
 
-  // playerScore may be null when opened from menu — treat as view-only
-  const hasScore = playerScore !== null && playerScore !== undefined && playerScore > 0;
+  const hasScore = typeof playerScore === "number" && playerScore > 0;
 
-  const loadBoard = () =>
-    fetch(`${API}/leaderboard`)
-      .then(r => r.json())
-      .then(data => { setEntries(Array.isArray(data) ? data : []); setLoading(false); })
-      .catch(() => { setEntries([]); setLoading(false); });
+  const loadBoard = async () => {
+    try {
+      const r = await fetch(`${API}/leaderboard`);
+      const data = await r.json();
+      // Debug: show raw shape in console
+      console.log("Leaderboard raw:", JSON.stringify(data));
+      setDebugInfo(JSON.stringify(data).slice(0, 200));
+      if (Array.isArray(data)) {
+        setEntries(data);
+      } else {
+        setEntries([]);
+      }
+    } catch (e) {
+      console.error("loadBoard error:", e);
+      setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => { loadBoard(); }, []);
 
   const submit = async () => {
     if (!name.trim() || !hasScore) return;
     setStatus("submitting");
-    setError(null);
+    setSubmitErr("");
     localStorage.setItem("racer_name", name.trim());
     try {
-      const res = await fetch(`${API}/leaderboard`, {
+      const r = await fetch(`${API}/leaderboard`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Ensure score is always sent as a real number
         body: JSON.stringify({ name: name.trim(), score: Number(playerScore) }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       setRank(data.rank);
       setStatus("done");
       await loadBoard();
     } catch (e) {
-      setError(e.message);
+      setSubmitErr(e.message);
       setStatus("error");
     }
   };
 
-  const medal = i => ["🥇","🥈","🥉"][i] || `${i+1}.`;
-
-  // Format score — coerce to number first so "000500" works even if Redis returns a string
-  const fmt = s => Number(s).toString().padStart(6, "0");
+  const medal = i => ["🥇", "🥈", "🥉"][i] || `${i + 1}.`;
+  const fmt   = v => String(Math.floor(Number(v) || 0)).padStart(6, "0");
 
   return (
-    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",display:"flex",
-      alignItems:"center",justifyContent:"center",zIndex:100 }}>
-      <div style={{ background:"#0d0d1e",border:"1px solid #f5c51840",borderRadius:20,
-        padding:"32px 36px",width:440,maxWidth:"95vw",maxHeight:"90vh",overflowY:"auto",
-        boxShadow:"0 0 80px rgba(245,197,24,0.2)",fontFamily:"'Courier New',monospace" }}>
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100
+    }}>
+      <div style={{
+        background: "#0d0d1e", border: "1px solid #f5c51840", borderRadius: 20,
+        padding: "32px 36px", width: 460, maxWidth: "95vw", maxHeight: "90vh",
+        overflowY: "auto", boxShadow: "0 0 80px rgba(245,197,24,0.2)",
+        fontFamily: "'Courier New', monospace"
+      }}>
 
         {/* Header */}
-        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20 }}>
-          <div style={{ fontSize:22,fontWeight:900,color:"#f5c518" }}>🏆 LEADERBOARD</div>
-          <button onClick={onClose} style={{ background:"none",border:"none",color:"#aaa",fontSize:20,cursor:"pointer" }}>✕</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 22, fontWeight: 900, color: "#f5c518" }}>LEADERBOARD</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#aaa", fontSize: 20, cursor: "pointer" }}>x</button>
         </div>
 
-        {/* Submit panel — only shown when player has a real score */}
+        {/* Submit panel */}
         {hasScore && status !== "done" && (
-          <div style={{ marginBottom:20,padding:14,background:"rgba(245,197,24,0.07)",borderRadius:10 }}>
-            <div style={{ color:"#aaa",fontSize:11,marginBottom:8 }}>
-              YOUR SCORE: <span style={{ color:"#f5c518",fontWeight:700,fontSize:15 }}>{fmt(playerScore)}</span>
+          <div style={{ marginBottom: 20, padding: 14, background: "rgba(245,197,24,0.07)", borderRadius: 10 }}>
+            <div style={{ color: "#aaa", fontSize: 11, marginBottom: 8 }}>
+              YOUR SCORE:&nbsp;
+              <span style={{ color: "#f5c518", fontWeight: 700, fontSize: 16 }}>{fmt(playerScore)}</span>
             </div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={name} onChange={e=>setName(e.target.value)} maxLength={16}
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                maxLength={16}
                 placeholder="Your name..."
-                style={{ flex:1,padding:"8px 10px",background:"#1a1a2e",border:"1px solid #333",
-                  borderRadius:8,color:"#fff",fontFamily:"'Courier New',monospace",fontSize:13 }} />
-              <button onClick={submit} disabled={status==="submitting" || !name.trim()}
-                style={{ padding:"8px 16px",background:"#f5c518",border:"none",borderRadius:8,
-                  color:"#000",fontWeight:700,cursor:"pointer",fontFamily:"'Courier New',monospace",
-                  fontSize:13, opacity:(!name.trim()||status==="submitting")?0.5:1 }}>
-                {status==="submitting" ? "..." : "SUBMIT"}
+                style={{
+                  flex: 1, padding: "8px 10px", background: "#1a1a2e",
+                  border: "1px solid #333", borderRadius: 8, color: "#fff",
+                  fontFamily: "'Courier New', monospace", fontSize: 13
+                }}
+              />
+              <button
+                onClick={submit}
+                disabled={status === "submitting" || !name.trim()}
+                style={{
+                  padding: "8px 16px", background: "#f5c518", border: "none",
+                  borderRadius: 8, color: "#000", fontWeight: 700, cursor: "pointer",
+                  fontFamily: "'Courier New', monospace", fontSize: 13,
+                  opacity: (!name.trim() || status === "submitting") ? 0.5 : 1
+                }}
+              >
+                {status === "submitting" ? "..." : "SUBMIT"}
               </button>
             </div>
-            {error && <div style={{ color:"#e74c3c",fontSize:11,marginTop:6 }}>⚠ {error}</div>}
+            {submitErr && (
+              <div style={{ color: "#e74c3c", fontSize: 11, marginTop: 6 }}>Error: {submitErr}</div>
+            )}
           </div>
         )}
 
-        {status==="done" && rank && (
-          <div style={{ marginBottom:16,padding:12,background:"rgba(0,207,255,0.1)",borderRadius:10,
-            color:"#00cfff",fontSize:14,textAlign:"center" }}>
-            🎉 You ranked <strong>#{rank}</strong> globally!
+        {status === "done" && rank && (
+          <div style={{
+            marginBottom: 16, padding: 12, background: "rgba(0,207,255,0.1)",
+            borderRadius: 10, color: "#00cfff", fontSize: 14, textAlign: "center"
+          }}>
+            You ranked #{rank} globally!
           </div>
         )}
 
-        {/* Table — fixed layout keeps columns on one line */}
+        {/* Table */}
         {loading ? (
-          <div style={{ color:"#555",textAlign:"center",padding:20 }}>Loading...</div>
+          <div style={{ color: "#555", textAlign: "center", padding: 20 }}>Loading...</div>
         ) : entries.length === 0 ? (
-          <div style={{ color:"#888",textAlign:"center",padding:20 }}>No scores yet — be the first!</div>
+          <div>
+            <div style={{ color: "#888", textAlign: "center", padding: 20 }}>No scores yet!</div>
+            {debugInfo && (
+              <div style={{ color: "#444", fontSize: 10, wordBreak: "break-all", marginTop: 8 }}>
+                raw: {debugInfo}
+              </div>
+            )}
+          </div>
         ) : (
-          <table style={{ width:"100%",borderCollapse:"collapse",tableLayout:"fixed" }}>
-            <colgroup>
-              <col style={{ width:"36px" }} />
-              <col />
-              <col style={{ width:"90px" }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <th style={{ textAlign:"left",padding:"4px 6px",color:"#555",fontSize:11,fontWeight:600 }}>#</th>
-                <th style={{ textAlign:"left",padding:"4px 6px",color:"#555",fontSize:11,fontWeight:600 }}>NAME</th>
-                <th style={{ textAlign:"right",padding:"4px 6px",color:"#555",fontSize:11,fontWeight:600 }}>SCORE</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((e,i) => {
-                const isMe = name.trim() && e.name.toLowerCase() === name.trim().toLowerCase();
-                return (
-                  <tr key={i} style={{ borderTop:"1px solid #1a1a2e",
-                    background: isMe ? "rgba(245,197,24,0.08)" : "transparent" }}>
-                    <td style={{ padding:"9px 6px",color:"#f5c518",fontWeight:700,fontSize:14,whiteSpace:"nowrap" }}>
-                      {medal(i)}
-                    </td>
-                    <td style={{ padding:"9px 6px",color: isMe ? "#f5c518" : "#fff",
-                      fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
-                      {e.name}
-                    </td>
-                    <td style={{ padding:"9px 6px",color:"#f5c518",textAlign:"right",
-                      fontWeight:700,fontSize:14,whiteSpace:"nowrap",letterSpacing:"0.05em" }}>
-                      {fmt(e.score)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div>
+            {/* Header row */}
+            <div style={{
+              display: "grid", gridTemplateColumns: "40px 1fr 100px",
+              padding: "4px 8px", borderBottom: "1px solid #222",
+              color: "#555", fontSize: 11
+            }}>
+              <span>#</span>
+              <span>NAME</span>
+              <span style={{ textAlign: "right" }}>SCORE</span>
+            </div>
+            {/* Data rows */}
+            {entries.map((e, i) => {
+              const isMe = name.trim() && typeof e.name === "string" &&
+                e.name.toLowerCase() === name.trim().toLowerCase();
+              return (
+                <div key={i} style={{
+                  display: "grid", gridTemplateColumns: "40px 1fr 100px",
+                  padding: "10px 8px", borderBottom: "1px solid #161626",
+                  background: isMe ? "rgba(245,197,24,0.07)" : "transparent",
+                  alignItems: "center"
+                }}>
+                  <span style={{ color: "#f5c518", fontWeight: 700, fontSize: 15 }}>
+                    {medal(i)}
+                  </span>
+                  <span style={{
+                    color: isMe ? "#f5c518" : "#fff", fontSize: 14,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    paddingRight: 8
+                  }}>
+                    {e.name}
+                  </span>
+                  <span style={{
+                    color: "#f5c518", fontWeight: 700, fontSize: 15,
+                    textAlign: "right", letterSpacing: "0.05em"
+                  }}>
+                    {fmt(e.score)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-// ─── Garage / Car Shop Modal ──────────────────────────────────────────────────
 function GarageModal({ coins, unlockedCars, selectedCar, onBuy, onSelect, onClose }) {
   return (
     <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",display:"flex",
