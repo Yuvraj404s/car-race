@@ -285,8 +285,12 @@ function LeaderboardModal({ onClose, playerScore }) {
   useEffect(() => {
     fetch(`${API}/leaderboard`)
       .then(r => r.json())
-      .then(data => { setEntries(data); setLoading(false); })
-      .catch(() => { setLoading(false); });
+      .then(data => {
+        // Guard: always set an array even if API returns error object
+        setEntries(Array.isArray(data) ? data : []);
+        setLoading(false);
+      })
+      .catch(() => { setEntries([]); setLoading(false); });
   }, []);
 
   const submit = async () => {
@@ -304,7 +308,7 @@ function LeaderboardModal({ onClose, playerScore }) {
       setStatus("done");
       // Refresh board
       const lb = await fetch(`${API}/leaderboard`).then(r => r.json());
-      setEntries(lb);
+      setEntries(Array.isArray(lb) ? lb : []);
     } catch {
       setStatus("error");
     }
