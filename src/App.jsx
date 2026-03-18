@@ -13,18 +13,29 @@ const ROAD_L   = 0;
 const Y_MIN = 60, Y_MAX = CANVAS_H - CAR_H - 10, Y_DEFAULT = CANVAS_H - CAR_H - 20;
 const JUMP_POWER = -13, GRAVITY = 0.6, JUMP_CD = 40;
 
-// ─── Car Catalog ─────────────────────────────────────────────────────────────
+// ─── Car Catalog — each car has a unique body TYPE driving the shape renderer ──
+// type: "coupe" | "muscle" | "formula" | "cyber"
 const CARS = [
-  { id:"viper",   name:"VIPER",    cost:0,   speedBonus:0,   primary:"#e74c3c", accent:"#ff6b6b", glow:"255,80,80"   },
-  { id:"phantom", name:"PHANTOM",  cost:80,  speedBonus:1.2, primary:"#8e44ad", accent:"#bb88ff", glow:"160,80,255"  },
-  { id:"cyber",   name:"CYBER-X",  cost:200, speedBonus:2.5, primary:"#00cfff", accent:"#88eeff", glow:"0,200,255"   },
-  { id:"shadow",  name:"SHADOW",   cost:400, speedBonus:4.0, primary:"#2ecc71", accent:"#aaffcc", glow:"0,220,100"   },
+  { id:"viper",   name:"VIPER GT",   cost:0,   speedBonus:0,   type:"coupe",
+    primary:"#e74c3c", accent:"#ff9999", glow:"255,80,80",
+    desc:"Classic sports coupe" },
+  { id:"phantom", name:"PHANTOM",    cost:80,  speedBonus:1.2, type:"muscle",
+    primary:"#9b59b6", accent:"#d7aefb", glow:"180,80,255",
+    desc:"Brawny muscle car" },
+  { id:"cyber",   name:"CYBER-X",    cost:200, speedBonus:2.5, type:"formula",
+    primary:"#00cfff", accent:"#aaf0ff", glow:"0,200,255",
+    desc:"Low Formula racer" },
+  { id:"shadow",  name:"SHADOW MK2", cost:400, speedBonus:4.0, type:"cyber",
+    primary:"#2ecc71", accent:"#aaffcc", glow:"0,220,100",
+    desc:"Futuristic concept" },
 ];
-const ENEMY_COLORS = [
-  { primary:"#3498db", accent:"#88ccff", glow:"52,152,219" },
-  { primary:"#e67e22", accent:"#ffbb66", glow:"230,126,34"  },
-  { primary:"#e74c3c", accent:"#ff8888", glow:"231,76,60"   },
-  { primary:"#1abc9c", accent:"#66ffdd", glow:"26,188,156"  },
+// Enemy cars use random types for visual variety
+const ENEMY_POOL = [
+  { primary:"#3498db", accent:"#88ccff", glow:"52,152,219",  type:"coupe"   },
+  { primary:"#e67e22", accent:"#ffbb66", glow:"230,126,34",  type:"muscle"  },
+  { primary:"#e74c3c", accent:"#ff8888", glow:"231,76,60",   type:"formula" },
+  { primary:"#f1c40f", accent:"#fff0aa", glow:"241,196,15",  type:"coupe"   },
+  { primary:"#1abc9c", accent:"#66ffdd", glow:"26,188,156",  type:"cyber"   },
 ];
 
 const API = "/api";
@@ -196,160 +207,342 @@ function createAudio() {
   return { startEngine,setEngineRPM,stopEngine,pauseEngine,resumeEngine,startMusic,stopMusic,setMusicVol,setSfxVol,getMusicVol,getSfxVol,playCrash,playCoin,playJump };
 }
 
-// ─── Drawing Helpers ──────────────────────────────────────────────────────────
+// ─── Drawing Helpers ─────────────────────────────────────────────────────────
+// Each car type has a unique shape drawn top-down with canvas paths.
+// Ground shadow + neon aura are shared across all types.
 
-// Detailed sci-fi car using canvas paths
-function drawCar(ctx, x, y, w, h, car, isPlayer, flip, jumpZ=0) {
-  const shadowScale = Math.max(0.1, 1 - jumpZ/100);
-  // Ground shadow
+// ── Shared: shadow + aura wrapper ───────────────────────────────────────────
+function carShadow(ctx, w, h, jumpZ, shadowScale) {
   ctx.save();
-  ctx.translate(x+w/2, y+h*0.9+jumpZ*0.2);
-  ctx.globalAlpha = 0.4*shadowScale;
-  const sg = ctx.createRadialGradient(0,0,2,0,0,w/2*shadowScale);
-  sg.addColorStop(0,"rgba(0,0,0,0.8)"); sg.addColorStop(1,"transparent");
-  ctx.fillStyle=sg; ctx.beginPath(); ctx.ellipse(0,0,w*0.55*shadowScale,8*shadowScale,0,0,Math.PI*2); ctx.fill();
+  ctx.translate(0, h*0.42 + jumpZ*0.2);
+  ctx.globalAlpha = 0.5 * shadowScale;
+  const sg = ctx.createRadialGradient(0,0,1,0,0,w*0.55*shadowScale);
+  sg.addColorStop(0,"rgba(0,0,0,0.9)"); sg.addColorStop(1,"transparent");
+  ctx.fillStyle=sg; ctx.beginPath();
+  ctx.ellipse(0,0, w*0.55*shadowScale, 9*shadowScale, 0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function carJumpAura(ctx, w, h, jumpZ, glow) {
+  if(jumpZ<8) return;
+  const alpha=Math.min(jumpZ/48,0.9);
+  ctx.strokeStyle=`rgba(${glow},${alpha})`; ctx.lineWidth=3;
+  ctx.shadowColor=`rgb(${glow})`; ctx.shadowBlur=20;
+  ctx.beginPath(); ctx.ellipse(0,h/2-6, w/2+8, 10, 0,0,Math.PI*2); ctx.stroke();
+  ctx.shadowBlur=0;
+}
+
+// ── Type 1: COUPE — sleek sports coupe, long hood, short cabin ──────────────
+function drawCoupe(ctx, bw, bh, p, a, gr, isPlayer) {
+  // Main body — long tapered shape
+  const bodyG = ctx.createLinearGradient(0,-bh/2, 0,bh/2);
+  bodyG.addColorStop(0, a); bodyG.addColorStop(0.5, p); bodyG.addColorStop(1,"#111");
+  ctx.fillStyle=bodyG;
+  ctx.beginPath();
+  ctx.moveTo(-bw/2+8,  -bh/2+4);   // front-left nose
+  ctx.lineTo( bw/2-8,  -bh/2+4);   // front-right nose
+  ctx.lineTo( bw/2,    -bh/2+18);   // front shoulder R
+  ctx.lineTo( bw/2+2,   bh/2-8);   // rear-right
+  ctx.lineTo(-bw/2-2,   bh/2-8);   // rear-left
+  ctx.lineTo(-bw/2,    -bh/2+18);   // front shoulder L
+  ctx.closePath(); ctx.fill();
+
+  // Cabin glass — sits in mid section
+  const cabinW=bw*0.68, cabinTop=-bh*0.1, cabinBot=bh*0.18;
+  const glassG=ctx.createLinearGradient(0,cabinTop,0,cabinBot);
+  glassG.addColorStop(0,`rgba(${gr},0.85)`); glassG.addColorStop(1,`rgba(20,30,60,0.9)`);
+  ctx.fillStyle=glassG; ctx.globalAlpha=0.9;
+  ctx.beginPath();
+  ctx.moveTo(-cabinW/2+4, cabinTop+2);
+  ctx.lineTo( cabinW/2-4, cabinTop+2);
+  ctx.lineTo( cabinW/2,   cabinBot);
+  ctx.lineTo(-cabinW/2,   cabinBot);
+  ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+
+  // Roof
+  ctx.fillStyle="rgba(10,10,20,0.95)";
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.28, cabinTop); ctx.lineTo(bw*0.28, cabinTop);
+  ctx.lineTo(bw*0.25, cabinTop-bh*0.15); ctx.lineTo(-bw*0.25, cabinTop-bh*0.15);
+  ctx.closePath(); ctx.fill();
+
+  // Body stripe
+  ctx.strokeStyle=`rgba(${gr},0.7)`; ctx.lineWidth=2;
+  ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=6;
+  ctx.beginPath(); ctx.moveTo(-bw/2+2, bh*0.05); ctx.lineTo(bw/2-2, bh*0.05); ctx.stroke();
+  ctx.shadowBlur=0;
+
+  // Hood vents (front)
+  ctx.strokeStyle=`rgba(${gr},0.5)`; ctx.lineWidth=1.2;
+  [-bw*0.12, 0, bw*0.12].forEach(vx=>{
+    ctx.beginPath(); ctx.moveTo(vx,-bh/2+7); ctx.lineTo(vx,-bh/2+14); ctx.stroke();
+  });
+
+  // Headlights
+  ctx.fillStyle=isPlayer?"#ffe8a0":"#ff2222";
+  ctx.shadowColor=isPlayer?"#fff":"#ff0000"; ctx.shadowBlur=14;
+  [[-bw/2+5,-bh/2+8],[bw/2-5,-bh/2+8]].forEach(([lx,ly])=>{
+    ctx.beginPath(); ctx.ellipse(lx,ly,6,3,0,0,Math.PI*2); ctx.fill();
+  });
+  ctx.shadowBlur=0;
+
+  // Brake lights
+  ctx.fillStyle=isPlayer?"#ff2222":"rgba(255,30,30,0.6)"; ctx.shadowBlur=0;
+  [[-bw/2+5,bh/2-10],[bw/2-5,bh/2-10]].forEach(([lx,ly])=>{
+    ctx.beginPath(); ctx.roundRect(lx-5,ly-3,10,5,2); ctx.fill();
+  });
+
+  // Wheels
+  drawWheels(ctx, bw, bh, gr);
+  // Underglow
+  drawUnderglow(ctx, bw, bh, gr);
+}
+
+// ── Type 2: MUSCLE — wide, boxy, tall stance, hood scoop ────────────────────
+function drawMuscle(ctx, bw, bh, p, a, gr, isPlayer) {
+  const bodyG=ctx.createLinearGradient(-bw/2,0,bw/2,0);
+  bodyG.addColorStop(0,"#111"); bodyG.addColorStop(0.15,a);
+  bodyG.addColorStop(0.5,p); bodyG.addColorStop(0.85,a); bodyG.addColorStop(1,"#111");
+  ctx.fillStyle=bodyG;
+  // Wide boxy body
+  ctx.beginPath();
+  ctx.moveTo(-bw/2-3, -bh/2+12);
+  ctx.lineTo( bw/2+3, -bh/2+12);
+  ctx.lineTo( bw/2+3,  bh/2-6);
+  ctx.lineTo(-bw/2-3,  bh/2-6);
+  ctx.closePath(); ctx.fill();
+
+  // Hood scoop
+  ctx.fillStyle=`rgba(0,0,0,0.7)`;
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.18,-bh/2+12); ctx.lineTo(bw*0.18,-bh/2+12);
+  ctx.lineTo(bw*0.14,-bh/2+3); ctx.lineTo(-bw*0.14,-bh/2+3);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle=`rgba(${gr},0.8)`; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.1,-bh/2+5); ctx.lineTo(bw*0.1,-bh/2+5); ctx.stroke();
+
+  // Tall cabin
+  ctx.fillStyle="rgba(8,8,18,0.95)";
+  ctx.beginPath(); ctx.roundRect(-bw*0.3,-bh*0.1,bw*0.6,bh*0.35,4); ctx.fill();
+
+  // Glass
+  const glassG=ctx.createLinearGradient(0,-bh*0.08,0,bh*0.12);
+  glassG.addColorStop(0,`rgba(${gr},0.8)`); glassG.addColorStop(1,`rgba(30,30,80,0.85)`);
+  ctx.fillStyle=glassG; ctx.globalAlpha=0.85;
+  ctx.beginPath(); ctx.roundRect(-bw*0.26,-bh*0.07,bw*0.52,bh*0.28,3); ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Side exhaust stripes
+  ctx.strokeStyle=`rgba(${gr},0.65)`; ctx.lineWidth=2.5;
+  ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=5;
+  [[-bw/2-1,bh*0.08],[bw/2+1,bh*0.08]].forEach(([ex,ey])=>{
+    ctx.beginPath(); ctx.moveTo(ex,ey-10); ctx.lineTo(ex,ey+10); ctx.stroke();
+  });
+  ctx.shadowBlur=0;
+
+  // Headlights — wide bar style
+  ctx.fillStyle=isPlayer?"#ffe080":"#ff1111";
+  ctx.shadowColor=isPlayer?"#fff":"#f00"; ctx.shadowBlur=16;
+  ctx.beginPath(); ctx.roundRect(-bw/2+2,-bh/2+14,bw-4,5,2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  drawWheels(ctx, bw, bh, gr, true); // wider wheels
+  drawUnderglow(ctx, bw, bh, gr);
+}
+
+// ── Type 3: FORMULA — ultra-low, wide wings, F1-style ───────────────────────
+function drawFormula(ctx, bw, bh, p, a, gr, isPlayer) {
+  const fw = bw*1.5; // much wider due to wings
+
+  // Front wing
+  ctx.fillStyle=p;
+  ctx.beginPath();
+  ctx.moveTo(-fw/2,-bh/2+6); ctx.lineTo(fw/2,-bh/2+6);
+  ctx.lineTo(fw/2-6,-bh/2+14); ctx.lineTo(-fw/2+6,-bh/2+14);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle=`rgba(${gr},0.8)`; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(-fw/2,-bh/2+10); ctx.lineTo(fw/2,-bh/2+10); ctx.stroke();
+
+  // Rear wing
+  ctx.fillStyle=a;
+  ctx.beginPath();
+  ctx.moveTo(-fw/2+2,bh/2-14); ctx.lineTo(fw/2-2,bh/2-14);
+  ctx.lineTo(fw/2-8,bh/2-6); ctx.lineTo(-fw/2+8,bh/2-6);
+  ctx.closePath(); ctx.fill();
+
+  // Central body — narrow pod
+  const bodyG=ctx.createLinearGradient(0,-bh/2,0,bh/2);
+  bodyG.addColorStop(0,a); bodyG.addColorStop(0.3,p); bodyG.addColorStop(1,"#000");
+  ctx.fillStyle=bodyG;
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.28,-bh/2+14);
+  ctx.lineTo( bw*0.28,-bh/2+14);
+  ctx.lineTo( bw*0.35, bh/2-14);
+  ctx.lineTo(-bw*0.35, bh/2-14);
+  ctx.closePath(); ctx.fill();
+
+  // Cockpit bubble
+  const cockpitG=ctx.createRadialGradient(0,-bh*0.05,2,0,-bh*0.05,bw*0.28);
+  cockpitG.addColorStop(0,`rgba(${gr},0.95)`); cockpitG.addColorStop(0.6,`rgba(0,30,80,0.8)`); cockpitG.addColorStop(1,"rgba(0,0,0,0.9)");
+  ctx.fillStyle=cockpitG; ctx.globalAlpha=0.9;
+  ctx.beginPath(); ctx.ellipse(0,-bh*0.05, bw*0.24, bh*0.18, 0,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  // HALO bar
+  ctx.strokeStyle=p; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(-bw*0.2,-bh*0.18); ctx.lineTo(0,-bh*0.25); ctx.lineTo(bw*0.2,-bh*0.18); ctx.stroke();
+
+  // Engine glow
+  ctx.fillStyle=`rgba(${gr},0.6)`; ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.ellipse(0,bh*0.38,bw*0.12,bh*0.06,0,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  // Headlights
+  ctx.fillStyle=isPlayer?"#fff0a0":"#ff1111"; ctx.shadowColor=isPlayer?"#fff":"#f00"; ctx.shadowBlur=14;
+  [[-bw*0.18,-bh/2+10],[bw*0.18,-bh/2+10]].forEach(([lx,ly])=>{
+    ctx.beginPath(); ctx.ellipse(lx,ly,4,2.5,0,0,Math.PI*2); ctx.fill();
+  });
+  ctx.shadowBlur=0;
+
+  // Formula wheels — large exposed discs
+  const fy=[-bh/2+14, bh/2-14];
+  const fx=[-fw*0.34, fw*0.34];
+  fx.forEach(wx=>fy.forEach(wy=>{
+    ctx.fillStyle="#0a0a0a";
+    ctx.beginPath(); ctx.ellipse(wx,wy,9,10,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=`rgba(${gr},0.8)`; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(wx,wy,5,6,0,0,Math.PI*2); ctx.stroke();
+  }));
+}
+
+// ── Type 4: CYBER — angular cyberpunk concept ────────────────────────────────
+function drawCyber(ctx, bw, bh, p, a, gr, isPlayer) {
+  // Outer angular shell
+  const bodyG=ctx.createLinearGradient(-bw/2,-bh/2,bw/2,bh/2);
+  bodyG.addColorStop(0,"#0a0a12"); bodyG.addColorStop(0.3,p); bodyG.addColorStop(0.7,a); bodyG.addColorStop(1,"#0a0a12");
+  ctx.fillStyle=bodyG;
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.3, -bh/2);      // top-left
+  ctx.lineTo( bw*0.3, -bh/2);      // top-right
+  ctx.lineTo( bw/2+4, -bh*0.12);   // shoulder R
+  ctx.lineTo( bw/2+6,  bh*0.3);    // mid R
+  ctx.lineTo( bw*0.2,  bh/2);      // rear-right
+  ctx.lineTo(-bw*0.2,  bh/2);      // rear-left
+  ctx.lineTo(-bw/2-6,  bh*0.3);    // mid L
+  ctx.lineTo(-bw/2-4, -bh*0.12);   // shoulder L
+  ctx.closePath(); ctx.fill();
+
+  // Hex panel details
+  ctx.strokeStyle=`rgba(${gr},0.4)`; ctx.lineWidth=1;
+  const hexes=[[-bw*0.1,-bh*0.15],[bw*0.1,-bh*0.15],[0,-bh*0.3],[-bw*0.1,bh*0.1],[bw*0.1,bh*0.1]];
+  hexes.forEach(([hx,hy])=>{
+    ctx.beginPath();
+    for(let i=0;i<6;i++){
+      const angle=Math.PI/3*i-Math.PI/6;
+      const hSize=bw*0.1;
+      if(i===0) ctx.moveTo(hx+Math.cos(angle)*hSize,hy+Math.sin(angle)*hSize);
+      else ctx.lineTo(hx+Math.cos(angle)*hSize,hy+Math.sin(angle)*hSize);
+    }
+    ctx.closePath(); ctx.stroke();
+  });
+
+  // Cockpit — angular glass
+  ctx.fillStyle="rgba(5,5,20,0.92)";
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.22,-bh*0.32); ctx.lineTo(bw*0.22,-bh*0.32);
+  ctx.lineTo(bw*0.3,bh*0.05); ctx.lineTo(-bw*0.3,bh*0.05);
+  ctx.closePath(); ctx.fill();
+
+  const glassG=ctx.createLinearGradient(0,-bh*0.3,0,bh*0.05);
+  glassG.addColorStop(0,`rgba(${gr},0.9)`); glassG.addColorStop(1,`rgba(${gr},0.1)`);
+  ctx.fillStyle=glassG; ctx.globalAlpha=0.75;
+  ctx.beginPath();
+  ctx.moveTo(-bw*0.19,-bh*0.28); ctx.lineTo(bw*0.19,-bh*0.28);
+  ctx.lineTo(bw*0.26,bh*0.02); ctx.lineTo(-bw*0.26,bh*0.02);
+  ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+
+  // Neon trim lines
+  ctx.strokeStyle=`rgba(${gr},0.9)`; ctx.lineWidth=1.5;
+  ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=10;
+  // Front edge
+  ctx.beginPath(); ctx.moveTo(-bw*0.3,-bh/2); ctx.lineTo(bw*0.3,-bh/2); ctx.stroke();
+  // Side lines
+  ctx.beginPath(); ctx.moveTo(-bw/2-4,-bh*0.1); ctx.lineTo(-bw/2-6,bh*0.28); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bw/2+4,-bh*0.1); ctx.lineTo(bw/2+6,bh*0.28); ctx.stroke();
+  ctx.shadowBlur=0;
+
+  // Matrix-style front LED bar
+  ctx.fillStyle=isPlayer?"#e0ffe0":"#ff2200"; ctx.shadowColor=isPlayer?`rgba(${gr},1)`:"#ff0000"; ctx.shadowBlur=18;
+  ctx.beginPath(); ctx.roundRect(-bw*0.25,-bh/2+2, bw*0.5, 4, 2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  // Rear light bar
+  ctx.fillStyle=`rgba(${gr},0.8)`; ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=12;
+  ctx.beginPath(); ctx.roundRect(-bw*0.3,bh/2-5, bw*0.6,3,1); ctx.fill();
+  ctx.shadowBlur=0;
+
+  drawWheels(ctx, bw, bh, gr);
+  drawUnderglow(ctx, bw, bh, gr);
+}
+
+// ── Shared wheel renderer ─────────────────────────────────────────────────────
+function drawWheels(ctx, bw, bh, gr, wide=false) {
+  const ww=wide?13:10, wh=wide?16:13;
+  const positions=[
+    [-bw/2-ww+2, -bh*0.36],
+    [ bw/2-2,    -bh*0.36],
+    [-bw/2-ww+2,  bh*0.36],
+    [ bw/2-2,     bh*0.36],
+  ];
+  positions.forEach(([wx,wy])=>{
+    // Tyre
+    ctx.fillStyle="#0d0d0d";
+    ctx.beginPath(); ctx.roundRect(wx,wy-wh/2,ww,wh,3); ctx.fill();
+    ctx.strokeStyle="#1a1a1a"; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.roundRect(wx,wy-wh/2,ww,wh,3); ctx.stroke();
+    // Rim spokes
+    ctx.strokeStyle=`rgba(${gr},0.7)`; ctx.lineWidth=1.5;
+    const rcx=wx+ww/2, rcy=wy, rr=wh*0.35;
+    for(let s=0;s<4;s++){
+      const angle=(Math.PI/2)*s;
+      ctx.beginPath(); ctx.moveTo(rcx,rcy);
+      ctx.lineTo(rcx+Math.cos(angle)*rr, rcy+Math.sin(angle)*rr); ctx.stroke();
+    }
+    ctx.strokeStyle=`rgba(${gr},0.5)`; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(rcx,rcy,rr,0,Math.PI*2); ctx.stroke();
+  });
+}
+
+function drawUnderglow(ctx, bw, bh, gr) {
+  ctx.strokeStyle=`rgba(${gr},0.7)`; ctx.lineWidth=2;
+  ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.moveTo(-bw/2+2,bh/2-4); ctx.lineTo(bw/2-2,bh/2-4); ctx.stroke();
+  ctx.shadowBlur=0;
+}
+
+// ── Main dispatch ─────────────────────────────────────────────────────────────
+function drawCar(ctx, x, y, w, h, car, isPlayer, flip, jumpZ=0) {
+  const shadowScale=Math.max(0.1,1-jumpZ/100);
+
+  ctx.save(); ctx.translate(x+w/2, y+h/2);
+  carShadow(ctx, w, h, jumpZ, shadowScale);
   ctx.restore();
 
   ctx.save();
   ctx.translate(x+w/2, y+h/2-jumpZ);
-  if (flip) ctx.scale(1,-1);
+  if(flip) ctx.scale(1,-1);
   ctx.globalAlpha=1;
 
-  const p=car.primary, a=car.accent, gr=car.glow;
-  const bw=w, bh=h;
-
-  // ── Body base ──
-  const bodyGrad = ctx.createLinearGradient(-bw/2,-bh/2,bw/2,bh/2);
-  bodyGrad.addColorStop(0, a);
-  bodyGrad.addColorStop(0.4, p);
-  bodyGrad.addColorStop(1, `rgba(0,0,0,0.6)`);
-  ctx.fillStyle=bodyGrad;
-  // Main body shape — wedge-style
-  ctx.beginPath();
-  ctx.moveTo(-bw/2+6, -bh/2+20);  // front-left
-  ctx.lineTo( bw/2-6, -bh/2+14);  // front-right
-  ctx.lineTo( bw/2,    bh/2-10);  // rear-right
-  ctx.lineTo(-bw/2,    bh/2-10);  // rear-left
-  ctx.closePath();
-  ctx.fill();
-
-  // ── Roof cabin ──
-  ctx.fillStyle=`rgba(0,0,20,0.85)`;
-  ctx.beginPath();
-  ctx.moveTo(-bw/2+10, -bh/2+22);
-  ctx.lineTo( bw/2-10, -bh/2+16);
-  ctx.lineTo( bw/2-8,  -bh/2+bh*0.5);
-  ctx.lineTo(-bw/2+8,  -bh/2+bh*0.5);
-  ctx.closePath();
-  ctx.fill();
-
-  // ── Windshield glass ──
-  const glassGrad = ctx.createLinearGradient(-bw/2+12,-bh/2+22,bw/2-12,-bh/2+40);
-  glassGrad.addColorStop(0,`rgba(${gr},0.9)`);
-  glassGrad.addColorStop(1,`rgba(${gr},0.2)`);
-  ctx.fillStyle=glassGrad; ctx.globalAlpha=0.85;
-  ctx.beginPath();
-  ctx.moveTo(-bw/2+12,-bh/2+24); ctx.lineTo(bw/2-12,-bh/2+18);
-  ctx.lineTo(bw/2-10,-bh/2+40); ctx.lineTo(-bw/2+10,-bh/2+40);
-  ctx.closePath(); ctx.fill();
-  ctx.globalAlpha=1;
-
-  // ── Side air vents ──
-  ctx.strokeStyle=`rgba(${gr},0.7)`; ctx.lineWidth=1.5;
-  [-bh/2+48,-bh/2+56,-bh/2+64].forEach(vy=>{
-    ctx.beginPath(); ctx.moveTo(-bw/2+2,vy); ctx.lineTo(-bw/2+8,vy); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(bw/2-2,vy); ctx.lineTo(bw/2-8,vy); ctx.stroke();
-  });
-
-  // ── Neon underglow stripe ──
-  ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=8;
-  ctx.strokeStyle=`rgba(${gr},0.9)`; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(-bw/2+4,bh/2-12); ctx.lineTo(bw/2-4,bh/2-12); ctx.stroke();
-  ctx.shadowBlur=0;
-
-  // ── Wheels (4 corners) ──
-  const wheelPos=[
-    [-bw/2+2,-bh/2+18,14,10],
-    [ bw/2-2,-bh/2+18,14,10],
-    [-bw/2+2, bh/2-24,14,10],
-    [ bw/2-2, bh/2-24,14,10],
-  ];
-  wheelPos.forEach(([wx,wy,wh,ww])=>{
-    const xOff = wx<0 ? -ww : 0;
-    // Tyre
-    ctx.fillStyle="#0a0a0a";
-    ctx.beginPath(); ctx.roundRect(wx+xOff,wy-wh/2,ww,wh,3); ctx.fill();
-    // Rim glow
-    ctx.fillStyle=`rgba(${gr},0.6)`;
-    ctx.beginPath(); ctx.arc(wx+(wx<0?-ww/2:ww/2),wy,3,0,Math.PI*2); ctx.fill();
-  });
-
-  // ── Headlights / brake lights ──
-  if (isPlayer) {
-    ctx.fillStyle="#fffde8"; ctx.shadowColor="#fff8"; ctx.shadowBlur=12;
-  } else {
-    ctx.fillStyle="#ff3333"; ctx.shadowColor="#f00"; ctx.shadowBlur=10;
+  const {primary:p, accent:a, glow:gr, type} = car;
+  switch(type){
+    case "muscle":  drawMuscle (ctx,w,h,p,a,gr,isPlayer); break;
+    case "formula": drawFormula(ctx,w,h,p,a,gr,isPlayer); break;
+    case "cyber":   drawCyber  (ctx,w,h,p,a,gr,isPlayer); break;
+    default:        drawCoupe  (ctx,w,h,p,a,gr,isPlayer); break;
   }
-  ctx.beginPath(); ctx.ellipse(-bw/2+7,-bh/2+16,5,3,0,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse( bw/2-7,-bh/2+16,5,3,0,0,Math.PI*2); ctx.fill();
-  ctx.shadowBlur=0;
-
-  // ── Jump aura ──
-  if (jumpZ>8) {
-    const alpha=Math.min(jumpZ/50,0.85);
-    ctx.strokeStyle=`rgba(${gr},${alpha})`; ctx.lineWidth=2.5;
-    ctx.shadowColor=`rgb(${gr})`; ctx.shadowBlur=16;
-    ctx.beginPath(); ctx.ellipse(0,bh/2-8,bw/2+6,9,0,0,Math.PI*2); ctx.stroke();
-    ctx.shadowBlur=0;
-  }
+  carJumpAura(ctx,w,h,jumpZ,gr);
   ctx.restore();
-}
-
-// Garage preview — static top-down car icon, no jump
-function drawCarPreview(ctx, cx, cy, w, h, car) {
-  drawCar(ctx, cx-w/2, cy-h/2, w, h, car, true, false, 0);
-}
-
-function drawRoad(ctx, offset) {
-  // Deep space background
-  const bg = ctx.createLinearGradient(0,0,0,CANVAS_H);
-  bg.addColorStop(0,"#030310"); bg.addColorStop(1,"#060618");
-  ctx.fillStyle=bg; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
-
-  // Road surface — subtle grid/tarmac
-  ctx.fillStyle="#0c0c20"; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
-
-  // Road grid lines (receding perspective feel)
-  const gGrid = ctx.createLinearGradient(0,0,0,CANVAS_H);
-  gGrid.addColorStop(0,"rgba(0,180,255,0.04)"); gGrid.addColorStop(1,"rgba(0,180,255,0.15)");
-  ctx.strokeStyle=gGrid; ctx.lineWidth=1;
-  ctx.setLineDash([20,20]);
-  for(let row=0;row<CANVAS_H;row+=40){
-    const yy=(row+offset*0.8)%CANVAS_H;
-    ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(CANVAS_W,yy); ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  // Vertical lane dividers — glowing cyan
-  for(let ln=1;ln<LANE_COUNT;ln++){
-    const lx=ROAD_L+ln*LANE_W;
-    const dashLen=50,gap=35,period=dashLen+gap;
-    const grad=ctx.createLinearGradient(lx,0,lx,CANVAS_H);
-    grad.addColorStop(0,"rgba(0,200,255,0.1)"); grad.addColorStop(0.5,"rgba(0,200,255,0.5)"); grad.addColorStop(1,"rgba(0,200,255,0.1)");
-    ctx.strokeStyle=grad; ctx.lineWidth=2; ctx.setLineDash([dashLen,gap]);
-    ctx.lineDashOffset=-(offset%period);
-    ctx.beginPath(); ctx.moveTo(lx,0); ctx.lineTo(lx,CANVAS_H); ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  // Edge barriers — neon
-  ["left","right"].forEach(side=>{
-    const ex = side==="left" ? 0 : CANVAS_W;
-    const eg = ctx.createLinearGradient(ex,0,ex,CANVAS_H);
-    eg.addColorStop(0,"rgba(0,100,255,0.05)"); eg.addColorStop(0.5,"rgba(0,180,255,0.4)"); eg.addColorStop(1,"rgba(0,100,255,0.05)");
-    ctx.strokeStyle=eg; ctx.lineWidth=3;
-    ctx.beginPath(); ctx.moveTo(ex,0); ctx.lineTo(ex,CANVAS_H); ctx.stroke();
-  });
 }
 
 function drawParticles(ctx, particles) {
@@ -515,10 +708,19 @@ function GarageModal({ coins, unlockedCars, selectedCar, onBuy, onSelect, onClos
     const ctx=cv.getContext("2d");
     const car=preview||CARS.find(c=>c.id===selectedCar)||CARS[0];
     ctx.clearRect(0,0,cv.width,cv.height);
-    // Dark bg
-    ctx.fillStyle="rgba(5,10,30,0.0)"; ctx.fillRect(0,0,cv.width,cv.height);
-    // Draw big car preview
-    drawCar(ctx, cv.width/2-CAR_W*1.4, cv.height/2-CAR_H*1.4, CAR_W*2.8, CAR_H*2.8, car, true, false, 0);
+    // Subtle grid bg
+    ctx.fillStyle="rgba(10,14,35,0.0)"; ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.strokeStyle="rgba(0,200,255,0.07)"; ctx.lineWidth=1;
+    for(let gx=0;gx<cv.width;gx+=20){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,cv.height); ctx.stroke(); }
+    for(let gy=0;gy<cv.height;gy+=20){ ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(cv.width,gy); ctx.stroke(); }
+    // Preview — use type-specific proportions
+    const isFormula=car.type==="formula";
+    const pw=isFormula?CAR_W*1.8:CAR_W*2.4, ph=CAR_H*2.4;
+    const px=cv.width/2-pw/2, py=cv.height/2-ph/2-6;
+    drawCar(ctx, px, py, pw, ph, car, true, false, 0);
+    // Label
+    ctx.fillStyle=car.accent; ctx.font="bold 11px 'Courier New',monospace";
+    ctx.textAlign="center"; ctx.fillText(car.name, cv.width/2, cv.height-8);
   },[preview,selectedCar]);
 
   return(
@@ -531,32 +733,46 @@ function GarageModal({ coins, unlockedCars, selectedCar, onBuy, onSelect, onClos
         <div style={{color:"rgba(255,200,0,0.8)",fontSize:13,marginBottom:16,fontFamily:"'Courier New',monospace"}}>🪙 {coins} coins</div>
 
         {/* Large car preview canvas */}
-        <canvas ref={cvRef} width={200} height={200}
-          style={{display:"block",margin:"0 auto 18px",borderRadius:16,background:"rgba(0,200,255,0.04)",border:"1px solid rgba(0,200,255,0.12)"}}/>
+        <canvas ref={cvRef} width={220} height={180}
+          style={{display:"block",margin:"0 auto 16px",borderRadius:16,
+            background:"rgba(10,15,40,0.6)",border:"1px solid rgba(0,200,255,0.15)",
+            boxShadow:"0 0 30px rgba(0,200,255,0.06)"}}/>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
           {CARS.map(car=>{
             const owned=unlockedCars.includes(car.id);
             const sel=selectedCar===car.id;
             const canBuy=!owned&&coins>=car.cost;
+            const typeLabel={coupe:"Sports Coupe",muscle:"Muscle Car",formula:"Formula",cyber:"Cyber Concept"}[car.type]||car.type;
             return(
               <div key={car.id}
-                onMouseEnter={()=>setPreview(car)} onMouseLeave={()=>setPreview(null)}
-                style={{padding:14,borderRadius:14,cursor:"pointer",transition:"all 0.2s",
-                  background:sel?"rgba(0,200,255,0.12)":"rgba(255,255,255,0.04)",
-                  border:sel?`1px solid rgba(0,200,255,0.5)`:"1px solid rgba(255,255,255,0.08)",
-                  opacity:(!owned&&!canBuy)?0.45:1}}>
-                {/* Mini color bar */}
-                <div style={{height:4,borderRadius:2,background:`linear-gradient(90deg,${car.primary},${car.accent})`,marginBottom:10,boxShadow:`0 0 8px ${car.primary}`}}/>
-                <div style={{color:"#fff",fontWeight:700,fontSize:13,fontFamily:"'Courier New',monospace",marginBottom:3}}>{car.name}</div>
-                <div style={{color:"rgba(255,255,255,0.4)",fontSize:10,marginBottom:10}}>+{car.speedBonus.toFixed(1)} spd</div>
+                onPointerEnter={()=>setPreview(car)} onPointerLeave={()=>setPreview(null)}
+                style={{padding:12,borderRadius:14,cursor:"pointer",transition:"all 0.18s",
+                  background:sel?`rgba(${car.glow},0.12)`:"rgba(255,255,255,0.04)",
+                  border:sel?`1px solid rgba(${car.glow},0.55)`:"1px solid rgba(255,255,255,0.08)",
+                  opacity:(!owned&&!canBuy)?0.4:1}}>
+                {/* Colour swatch + type tag */}
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                  <div style={{width:28,height:6,borderRadius:3,
+                    background:`linear-gradient(90deg,${car.primary},${car.accent})`,
+                    boxShadow:`0 0 8px ${car.primary}`}}/>
+                  <span style={{color:"rgba(255,255,255,0.3)",fontSize:9,fontFamily:"'Courier New',monospace"}}>{typeLabel}</span>
+                </div>
+                <div style={{color:sel?car.accent:"#fff",fontWeight:700,fontSize:12,fontFamily:"'Courier New',monospace",marginBottom:2}}>{car.name}</div>
+                <div style={{color:"rgba(255,255,255,0.35)",fontSize:9,marginBottom:8,fontFamily:"'Courier New',monospace"}}>{car.desc}</div>
+                <div style={{color:"rgba(255,255,255,0.4)",fontSize:10,marginBottom:8,fontFamily:"'Courier New',monospace"}}>⚡ +{car.speedBonus.toFixed(1)} speed</div>
                 {owned?(
-                  <button onClick={()=>onSelect(car.id)} style={{width:"100%",padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:11,fontFamily:"'Courier New',monospace",background:sel?"rgba(0,200,255,0.8)":"rgba(255,255,255,0.1)",color:sel?"#000":"#aaa"}}>
-                    {sel?"✓ ACTIVE":"SELECT"}
+                  <button onClick={()=>onSelect(car.id)} style={{width:"100%",padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",
+                    fontWeight:700,fontSize:10,fontFamily:"'Courier New',monospace",
+                    background:sel?car.primary:"rgba(255,255,255,0.08)",color:sel?"#fff":"#888"}}>
+                    {sel?"✓ SELECTED":"SELECT"}
                   </button>
                 ):(
-                  <button onClick={()=>onBuy(car.id)} disabled={!canBuy} style={{width:"100%",padding:"7px 0",borderRadius:8,border:"none",cursor:canBuy?"pointer":"not-allowed",fontWeight:700,fontSize:11,fontFamily:"'Courier New',monospace",background:canBuy?"rgba(255,200,0,0.9)":"rgba(255,255,255,0.05)",color:canBuy?"#000":"#555"}}>
-                    🪙 {car.cost}
+                  <button onClick={()=>onBuy(car.id)} disabled={!canBuy} style={{width:"100%",padding:"7px 0",borderRadius:8,border:"none",
+                    cursor:canBuy?"pointer":"not-allowed",fontWeight:700,fontSize:10,fontFamily:"'Courier New',monospace",
+                    background:canBuy?"rgba(255,200,0,0.85)":"rgba(255,255,255,0.05)",
+                    color:canBuy?"#000":"#555"}}>
+                    🪙 {car.cost===0?"FREE":`${car.cost}`}
                   </button>
                 )}
               </div>
@@ -741,7 +957,7 @@ export default function App() {
       const lane=randI(0,LANE_COUNT-1);
       s.enemies.push({ x:ROAD_L+lane*LANE_W+(LANE_W-CAR_W)/2, y:-CAR_H-20, lane,
         speed:rand(s.speed*0.4,s.speed*0.72),
-        colors:ENEMY_COLORS[randI(0,ENEMY_COLORS.length-1)] });
+        colors:ENEMY_POOL[randI(0,ENEMY_POOL.length-1)] });
     };
     const spawnCoin=s=>{ const lane=randI(0,LANE_COUNT-1); s.coins.push({x:ROAD_L+lane*LANE_W+LANE_W/2,y:-20,r:13}); };
     const burst=(x,y,color,n=12)=>{
