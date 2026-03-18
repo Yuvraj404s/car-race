@@ -979,18 +979,101 @@ export default function App() {
     return()=>{ window.removeEventListener("keydown",dn); window.removeEventListener("keyup",up); };
   },[togglePause]);
 
-  // Global touch → tap left/right to steer (invisible)
-  const handleTouch=useCallback((e)=>{
-    if(screen!==GS.PLAYING) return;
-    const target=e.target;
-    if(target.tagName==="BUTTON"||target.closest?.("button")) return;
+  // ── Touch control system ─────────────────────────────────────────────────
+  // Touch zones (relative to screen):
+  //   Left 40%  → move left lane (tap/hold)
+  //   Right 40% → move right lane (tap/hold)
+  //   Middle 20% → jump (tap)
+  //   Swipe UP anywhere → jump
+  //   Swipe DOWN anywhere → move backward
+  //   Swipe UP anywhere → move forward
+  // All handled via touchstart/touchmove/touchend on the canvas wrapper
+
+  const touchStartRef = useRef({}); // trackId → {x, y, time}
+
+  const onTouchStart = useCallback((e) => {
+    if(screen !== GS.PLAYING) return;
+    const target = e.target;
+    if(target.tagName==="BUTTON" || target.closest?.("button")) return;
     e.preventDefault();
-    const mid=window.innerWidth/2;
-    Array.from(e.changedTouches).forEach(t=>{
-      if(t.clientX<mid) keysRef.current["_tapL"]=true;
-      else               keysRef.current["_tapR"]=true;
+    Array.from(e.changedTouches).forEach(t => {
+      touchStartRef.current[t.identifier] = {
+        x: t.clientX, y: t.clientY, time: Date.now()
+      };
     });
-  },[screen]);
+  }, [screen]);
+
+  const onTouchMove = useCallback((e) => {
+    if(screen !== GS.PLAYING) return;
+    e.preventDefault();
+    Array.from(e.changedTouches).forEach(t => {
+      const start = touchStartRef.current[t.identifier];
+      if(!start) return;
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      const absDx = Math.abs(dx), absDy = Math.abs(dy);
+
+      // Vertical swipe — forward/back (hold to maintain)
+      if(absDy > 20 && absDy > absDx) {
+        if(dy < 0) {
+          keysRef.current["_U"] = true;
+          keysRef.current["_D"] = false;
+        } else {
+          keysRef.current["_D"] = true;
+          keysRef.current["_U"] = false;
+        }
+      }
+      // Horizontal swipe — lane change (trigger once per direction)
+      if(absDx > 30 && absDx > absDy * 1.5) {
+        if(dx < 0 && !start.laneTriggered) {
+          keysRef.current["_tapL"] = true;
+          start.laneTriggered = true;
+          start.x = t.clientX; // reset origin so next swipe works
+        } else if(dx > 0 && !start.laneTriggered) {
+          keysRef.current["_tapR"] = true;
+          start.laneTriggered = true;
+          start.x = t.clientX;
+        }
+      }
+    });
+  }, [screen]);
+
+  const onTouchEnd = useCallback((e) => {
+    if(screen !== GS.PLAYING) return;
+    e.preventDefault();
+    Array.from(e.changedTouches).forEach(t => {
+      const start = touchStartRef.current[t.identifier];
+      if(start) {
+        const dx = t.clientX - start.x;
+        const dy = t.clientY - start.y;
+        const absDx = Math.abs(dx), absDy = Math.abs(dy);
+        const dur = Date.now() - start.time;
+
+        // Quick tap (< 200ms, minimal movement) — zone-based
+        if(dur < 200 && absDx < 25 && absDy < 25) {
+          const screenW = window.innerWidth;
+          const zone = t.clientX / screenW;
+          if(zone < 0.3) {
+            keysRef.current["_tapL"] = true;        // left zone → left
+          } else if(zone > 0.7) {
+            keysRef.current["_tapR"] = true;        // right zone → right
+          } else {
+            keysRef.current["_J"] = true;           // centre zone → JUMP
+            setTimeout(()=>{ keysRef.current["_J"]=false; }, 80);
+          }
+        }
+        // Short upward flick → jump
+        if(dy < -40 && absDy > absDx && dur < 300) {
+          keysRef.current["_J"] = true;
+          setTimeout(()=>{ keysRef.current["_J"]=false; }, 80);
+        }
+        delete touchStartRef.current[t.identifier];
+      }
+      // Release forward/back when finger lifts
+      keysRef.current["_U"] = false;
+      keysRef.current["_D"] = false;
+    });
+  }, [screen]);
 
   // ── Game loop ──────────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -1163,7 +1246,9 @@ export default function App() {
 
   return (
     <div
-      onTouchStart={handleTouch}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
       style={{ minHeight:"100vh", background:"#030308",
         display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
         fontFamily:"'Courier New',monospace", userSelect:"none", overflow:"hidden",
@@ -1187,6 +1272,39 @@ export default function App() {
           display:"flex", alignItems:"center", justifyContent:"center",
           backdropFilter:"blur(8px)", zIndex:10,
         }}>⏸</button>
+
+        {/* Touch control hint zones — invisible but labelled, fades after 4s */}
+        {screen===GS.PLAYING && !isReviving && (
+          <div style={{ position:"absolute", inset:0, display:"flex",
+            pointerEvents:"none", opacity:0,
+            animation:"fadeHint 4s ease-in-out forwards" }}>
+            <style>{`@keyframes fadeHint{0%{opacity:0.7}60%{opacity:0.7}100%{opacity:0}}`}</style>
+            {/* Left zone */}
+            <div style={{ flex:"0 0 30%", display:"flex", alignItems:"flex-end",
+              justifyContent:"center", paddingBottom:60,
+              borderRight:"1px dashed rgba(0,200,255,0.15)" }}>
+              <span style={{ color:"rgba(0,200,255,0.6)", fontSize:11, textAlign:"center",
+                fontFamily:"'Courier New',monospace" }}>◀ TAP<br/>LEFT</span>
+            </div>
+            {/* Centre zone — jump */}
+            <div style={{ flex:"0 0 40%", display:"flex", flexDirection:"column",
+              alignItems:"center", justifyContent:"flex-end", paddingBottom:60, gap:4 }}>
+              <span style={{ color:"rgba(0,200,255,0.6)", fontSize:11, textAlign:"center",
+                fontFamily:"'Courier New',monospace" }}>▲ SWIPE UP<br/>OR TAP = JUMP</span>
+              <div style={{ width:40, height:40, borderRadius:"50%",
+                border:"1px dashed rgba(0,200,255,0.3)",
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:18 }}>🚀</div>
+            </div>
+            {/* Right zone */}
+            <div style={{ flex:"0 0 30%", display:"flex", alignItems:"flex-end",
+              justifyContent:"center", paddingBottom:60,
+              borderLeft:"1px dashed rgba(0,200,255,0.15)" }}>
+              <span style={{ color:"rgba(0,200,255,0.6)", fontSize:11, textAlign:"center",
+                fontFamily:"'Courier New',monospace" }}>TAP ▶<br/>RIGHT</span>
+            </div>
+          </div>
+        )}
 
         {/* ── Revive overlay (shown on canvas) ── */}
         {isReviving && screen===GS.PLAYING && (
