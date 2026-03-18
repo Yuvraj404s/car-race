@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Game State Machine ──────────────────────────────────────────────────────
+// Strict states used throughout — never use raw strings to check screen.
+const GS = Object.freeze({
+  START_MENU : "START_MENU",
+  PLAYING    : "PLAYING",
+  GAME_OVER  : "GAME_OVER",
+});
+
+// ─── Config ─────────────────────────────────────────────────────────────────────
 const ROAD_WIDTH = 520;
 const LANE_COUNT  = 3;
 const LANE_WIDTH  = ROAD_WIDTH / LANE_COUNT;
@@ -70,7 +78,24 @@ function showRewardedAd({ onComplete, onSkip, onError }) {
   }
 }
 
-// ─── Utils ─────────────────────────────────────────────────────────────────────
+// ─── Ad Break Hook — inject Jio/AdMob SDK here later ────────────────────────
+// deathCount is module-level so it persists across React re-renders/re-mounts.
+let _deathCount = 0;
+
+function triggerAdBreak() {
+  _deathCount += 1;
+  console.log(`[AdBreak] Death #${_deathCount}`);
+  if (_deathCount % 3 === 0) {
+    // Every 3rd death → interstitial slot
+    console.log("%c[AdBreak] AD_TRIGGERED", "color:#ff6b00;font-weight:bold;font-size:14px");
+    // ── REPLACE the line below with your Jio / AdMob SDK call ──
+    // e.g. window.adsbygoogle?.push({ googletag: ... })
+    //      or  JioAds.showInterstitial({ slotId: "YOUR_SLOT" })
+    showInterstitialAd(() => {});
+  }
+}
+
+// ─── Utils ────────────────────────────────────────────────────────────────────
 const lerp  = (a, b, t) => a + (b - a) * t;
 const rand  = (lo, hi)  => Math.random() * (hi - lo) + lo;
 const randI = (lo, hi)  => Math.floor(rand(lo, hi + 1));
@@ -568,7 +593,7 @@ export default function App() {
   const retryCount  = useRef(0);   // tracks retries → interstitial every 3rd
   const reviveUsed  = useRef(false); // one rewarded revive per session
 
-  const [screen,     setScreen]     = useState("menu");
+  const [screen,     setScreen]     = useState(GS.START_MENU);
   const [finalScore, setFinalScore] = useState(0);
   const [highScore,  setHighScore]  = useState(() => parseInt(localStorage.getItem("racer_hs") || "0"));
   const [totalCoins, setTotalCoins] = useState(() => parseInt(localStorage.getItem("racer_coins") || "0"));
@@ -596,6 +621,12 @@ export default function App() {
     score:0, level:1, lives:3,
     speed: 4 + carData.speedBonus,
     baseSpeed: 4 + carData.speedBonus,
+    // ── Difficulty scaling ─────────────────────────────────────────
+    // speedMultiplier starts at 1.0 and increases by 0.1 every 15 seconds.
+    // Applied to enemy spawn intervals so the game gets harder over time.
+    speedMultiplier: 1.0,
+    elapsedMs: 0,              // total ms of gameplay (pauses excluded)
+    lastMultiplierTick: 0,     // ms timestamp of last multiplier increment
     combo:1, comboTimer:0, spawnTimer:0, spawnInterval:90,
     coinSpawnTimer:0, coinPulse:0,
     sessionCoins:0,
@@ -612,7 +643,7 @@ export default function App() {
         showInterstitialAd(() => {
           stateRef.current = initState();
           setIsGameOver(false);
-          setScreen("playing");
+          setScreen(GS.PLAYING);
           soundRef.current?.startEngine();
         });
         return;
@@ -620,7 +651,7 @@ export default function App() {
     }
     stateRef.current = initState();
     setIsGameOver(false);
-    setScreen("playing");
+    setScreen(GS.PLAYING);
     soundRef.current?.startEngine();
   }, [initState]);
 
@@ -675,7 +706,7 @@ export default function App() {
     });
     setIsGameOver(false);
     setAdState("idle");
-    setScreen("gameover");
+    setScreen(GS.GAME_OVER);
   }, []);
 
   // handleRevive is defined above with doRevive
@@ -700,7 +731,7 @@ export default function App() {
   // We accumulate elapsed ms and step the simulation in fixed 16.67ms chunks
   // so physics stays consistent regardless of frame timing.
   useEffect(() => {
-    if (screen !== "playing") return;
+    if (screen !== GS.PLAYING) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d", { alpha: false }); // alpha:false = faster compositing
     const snd = soundRef.current;
@@ -768,8 +799,20 @@ export default function App() {
       s.speed=s.baseSpeed+s.level*.7;
       snd?.setEngineSpeed(s.speed);
 
-      // Enemy spawn
-      s.spawnTimer++; s.spawnInterval=Math.max(35,90-s.level*5);
+      // ── Difficulty scaling: speedMultiplier +0.1 every 15 seconds ──────────
+      // elapsedMs counts real gameplay time (STEP = 16.67ms per tick)
+      s.elapsedMs += 1000/60;
+      const secElapsed = Math.floor(s.elapsedMs / 1000);
+      const expectedMult = 1.0 + Math.floor(secElapsed / 15) * 0.1;
+      if (expectedMult > s.speedMultiplier) {
+        s.speedMultiplier = parseFloat(expectedMult.toFixed(1));
+        console.log(`[Difficulty] speedMultiplier → ${s.speedMultiplier}x at ${secElapsed}s`);
+      }
+
+      // Enemy spawn — spawnInterval shrinks with level AND speedMultiplier
+      // speedMultiplier compresses gaps so more obstacles appear over time
+      s.spawnTimer++;
+      s.spawnInterval = Math.max(20, Math.floor((90 - s.level * 5) / s.speedMultiplier));
       if(s.spawnTimer>=s.spawnInterval){ spawnEnemy(s);s.spawnTimer=0; }
 
       // Coin spawn — every ~180 frames
@@ -816,6 +859,8 @@ export default function App() {
               snd?.stopEngine();
               setFinalScore(s.score);
               setIsGameOver(true);
+              // ── Ad break hook — fires every 3rd death ──────────────
+              triggerAdBreak();
               return;
             }
             break;
@@ -866,7 +911,8 @@ export default function App() {
 
       drawHUD(ctx,{ score:s.score,level:s.level,lives:s.lives,speed:s.speed,
         combo:s.combo,jumpReady:p.jumpCooldown===0&&!p.isJumping,
-        coins:totalCoins+s.sessionCoins, carName:carData.name });
+        coins:totalCoins+s.sessionCoins, carName:carData.name,
+        multiplier:s.speedMultiplier });
       ctx.restore();
     }; // end draw()
 
@@ -923,18 +969,39 @@ export default function App() {
 
   const btn = { fontFamily:"'Courier New',monospace",border:"none",borderRadius:10,cursor:"pointer",fontSize:18,fontWeight:700,padding:"16px 44px" };
 
+  // Touch overlay handler — fires when player taps anywhere on START/PLAYING screens
+  const handleGlobalTouch = useCallback((e) => {
+    // Only intercept during active gameplay — not on menus/modals
+    if (screen !== GS.PLAYING) return;
+    // Canvas-specific touch is handled on the canvas element itself.
+    // This global handler catches taps that land outside the canvas (e.g. D-pad area)
+    // but we still need it to not interfere with button taps on overlays.
+    const target = e.target;
+    const isButton = target.tagName === "BUTTON" || target.closest("button");
+    if (isButton) return;
+    const midX = window.innerWidth / 2;
+    Array.from(e.changedTouches).forEach(t => {
+      if (t.clientX < midX) keysRef.current["_tapL"] = true;
+      else                   keysRef.current["_tapR"] = true;
+    });
+  }, [screen]);
+
   return (
-    <div style={{ minHeight:"100vh",
-      background:"radial-gradient(ellipse at 50% 30%,#0d1b3e 0%,#05050f 70%)",
-      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
-      fontFamily:"'Courier New',monospace",userSelect:"none",overflow:"hidden",position:"relative" }}>
+    <div
+      onTouchStart={handleGlobalTouch}
+      style={{ minHeight:"100vh",
+        background:"radial-gradient(ellipse at 50% 30%,#0d1b3e 0%,#05050f 70%)",
+        display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+        fontFamily:"'Courier New',monospace",userSelect:"none",overflow:"hidden",position:"relative",
+        touchAction:"none" /* prevent scroll/zoom during gameplay */
+      }}>
 
       <div style={{ position:"absolute",inset:0,opacity:.07,pointerEvents:"none",
         backgroundImage:"linear-gradient(#f5c51822 1px,transparent 1px),linear-gradient(90deg,#f5c51822 1px,transparent 1px)",
         backgroundSize:"40px 40px" }} />
 
       {/* ── Canvas + Dpad ── */}
-      <div style={{ position:"relative",display:screen==="playing"?"block":"none" }}>
+      <div style={{ position:"relative",display:screen===GS.PLAYING?"block":"none" }}>
         <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
           style={{ display:"block",borderRadius:16,touchAction:"none",maxWidth:"100vw",
             boxShadow:"0 0 60px rgba(245,197,24,.25),0 0 120px rgba(231,76,60,.15)" }}
@@ -1068,7 +1135,7 @@ export default function App() {
            START SCREEN — Vibrant Indian mobile market UI
            Bold yellow/red, big PLAY button, high score display
       ══════════════════════════════════════════════════════════════ */}
-      {screen==="menu" && (
+      {screen===GS.START_MENU && (
         <div style={{
           position:"fixed", inset:0, zIndex:50,
           background:"linear-gradient(160deg,#ff6b00 0%,#ff0055 50%,#7c00ff 100%)",
@@ -1151,7 +1218,7 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════════
            GAME OVER SCREEN — Final score + Retry + Revive
       ══════════════════════════════════════════════════════════════ */}
-      {screen==="gameover" && (
+      {screen===GS.GAME_OVER && (
         <div style={{
           position:"fixed", inset:0, zIndex:50,
           background:"rgba(5,0,15,0.96)",
@@ -1205,7 +1272,7 @@ export default function App() {
 
             {/* REVIVE — green, only if not used */}
             {!reviveUsed.current && (
-              <button onClick={() => { stateRef.current && (stateRef.current.running=false); setIsGameOver(true); setScreen("playing"); }} style={{
+              <button onClick={() => { stateRef.current && (stateRef.current.running=false); setIsGameOver(true); setScreen(GS.PLAYING); }} style={{
                 width:"100%", padding:"16px 0", fontSize:17, fontWeight:700,
                 background:"linear-gradient(135deg,#00c853,#009624)",
                 color:"#fff", border:"none", borderRadius:50, cursor:"pointer",
@@ -1222,7 +1289,7 @@ export default function App() {
                 border:"1px solid #ffe60040", borderRadius:40, cursor:"pointer",
                 fontFamily:"'Courier New',monospace",
               }}>🏆 BOARD</button>
-              <button onClick={()=>setScreen("menu")} style={{
+              <button onClick={()=>setScreen(GS.START_MENU)} style={{
                 flex:1, padding:"14px 0", fontSize:14, fontWeight:700,
                 background:"rgba(255,255,255,0.06)", color:"#888",
                 border:"1px solid #333", borderRadius:40, cursor:"pointer",
@@ -1235,7 +1302,7 @@ export default function App() {
 
       {/* ── MODALS ── */}
       {modal==="leaderboard" && (
-        <LeaderboardModal playerScore={screen==="gameover"?finalScore:null} onClose={()=>setModal(null)}/>
+        <LeaderboardModal playerScore={screen===GS.GAME_OVER?finalScore:null} onClose={()=>setModal(null)}/>
       )}
       {modal==="garage" && (
         <GarageModal coins={totalCoins} unlockedCars={unlockedCars}
