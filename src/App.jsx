@@ -30,7 +30,47 @@ const ENEMY_COLORS = [
 // ── API — relative path, works on Vercel (prod) and via Vite proxy (local dev) ─
 const API = "/api";
 
-// ─── Utils ────────────────────────────────────────────────────────────────────
+// ─── Monetisation SDK Hooks ──────────────────────────────────────────────────
+// Drop-in wrappers for AdinPlay / AppLixir / any HTML5 ad provider.
+// Replace the console.log lines with real SDK calls once you have a publisher ID.
+
+function showInterstitialAd(onDone = () => {}) {
+  const aiptag = window.aiptag;
+  if (aiptag && aiptag.adplayer) {
+    // AdinPlay interstitial
+    aiptag.cmd.player.push(() => {
+      aiptag.adplayer.startPreRoll({
+        onAdComplete: onDone,
+        onAdSkipped:  onDone, // interstitials: continue even if skipped
+        onAdError:    onDone,
+      });
+    });
+  } else {
+    // Dev fallback — no SDK loaded
+    console.log("[Ad] showInterstitialAd (dev fallback)");
+    onDone();
+  }
+}
+
+function showRewardedAd({ onComplete, onSkip, onError }) {
+  const aiptag = window.aiptag;
+  if (aiptag && aiptag.adplayer) {
+    // AdinPlay rewarded
+    aiptag.cmd.player.push(() => {
+      aiptag.adplayer.startPreRoll({
+        onAdComplete: onComplete,
+        onAdSkipped:  onSkip,
+        onAdError:    onError,
+      });
+    });
+  } else {
+    // Dev fallback
+    console.log("[Ad] showRewardedAd (dev fallback) → granting reward");
+    onComplete();
+  }
+}
+
+// ─── Utils ─────────────────────────────────────────────────────────────────────
 const lerp  = (a, b, t) => a + (b - a) * t;
 const rand  = (lo, hi)  => Math.random() * (hi - lo) + lo;
 const randI = (lo, hi)  => Math.floor(rand(lo, hi + 1));
@@ -524,7 +564,9 @@ export default function App() {
   const stateRef   = useRef(null);
   const animRef    = useRef(null);
   const keysRef    = useRef({});
-  const soundRef   = useRef(null);
+  const soundRef    = useRef(null);
+  const retryCount  = useRef(0);   // tracks retries → interstitial every 3rd
+  const reviveUsed  = useRef(false); // one rewarded revive per session
 
   const [screen,     setScreen]     = useState("menu");
   const [finalScore, setFinalScore] = useState(0);
@@ -561,14 +603,28 @@ export default function App() {
     stars: Array.from({length:80},()=>({ x:rand(0,CANVAS_W),y:rand(0,CANVAS_H),r:rand(.5,2),a:rand(.3,.9),speed:rand(.5,1.5) })),
   }), [carData.speedBonus]);
 
-  const startGame = useCallback(() => {
+  const startGame = useCallback((isRetry = false) => {
+    if (isRetry) {
+      retryCount.current += 1;
+      reviveUsed.current = false; // reset revive for new session
+      // Show interstitial every 3rd retry
+      if (retryCount.current % 3 === 0) {
+        showInterstitialAd(() => {
+          stateRef.current = initState();
+          setIsGameOver(false);
+          setScreen("playing");
+          soundRef.current?.startEngine();
+        });
+        return;
+      }
+    }
     stateRef.current = initState();
     setIsGameOver(false);
     setScreen("playing");
     soundRef.current?.startEngine();
   }, [initState]);
 
-  // ── Core revive logic — only called AFTER ad is confirmed watched ───────────
+  // ── Core revive logic — called only from inside onAdComplete ────────────────
   const doRevive = useCallback(() => {
     const s = stateRef.current;
     if (!s) return;
@@ -582,13 +638,26 @@ export default function App() {
     s.player.jumpCooldown = 0;
     s.lives      = 1;
     s.enemies    = [];
-    s.invincible = 180;  // 3s grace period
+    s.invincible = 180;
     s.shake      = 0;
     s.running    = true;
+    reviveUsed.current = true;
     setIsGameOver(false);
     setAdState("idle");
     soundRef.current?.startEngine();
   }, []);
+
+  // ── handleRevive — show rewarded ad, grant revive only on onComplete ─────
+  const handleRevive = useCallback(() => {
+    if (adState === "loading") return;
+    if (reviveUsed.current) return; // one revive per run
+    setAdState("loading");
+    showRewardedAd({
+      onComplete: () => { console.log("[Ad] Rewarded complete → revive"); doRevive(); },
+      onSkip:     () => { console.log("[Ad] Rewarded skipped");  setAdState("skipped"); },
+      onError:    () => { console.warn("[Ad] Rewarded error");   setAdState("error"); },
+    });
+  }, [adState, doRevive]);
 
   // ── Hard game over — save progress and go to gameover screen ─────────────
   const triggerGameOver = useCallback(() => {
@@ -609,89 +678,7 @@ export default function App() {
     setScreen("gameover");
   }, []);
 
-  // ══════════════════════════════════════════════════════════════════
-  // REWARDED AD HANDLER
-  // ══════════════════════════════════════════════════════════════════
-  //
-  // HOW THE FLOW WORKS:
-  //   Player dies → isGameOver=true → overlay shows "Watch Ad to Revive"
-  //   Player taps → handleRevive() → SDK shows video ad
-  //   Ad completes → onAdComplete fires → doRevive() (reset + resume)
-  //   Ad skipped   → onAdSkipped  fires → deny revive, show "Try Again"
-  //   Ad error     → onAdError    fires → show "No Ad Available"
-  //
-  // SECURITY: doRevive() is ONLY ever called inside onAdComplete.
-  // The player cannot revive without earning the ad revenue.
-  //
-  const handleRevive = useCallback(() => {
-    if (adState === "loading") return; // prevent double-tap
-
-    // ── OPTION A: AdinPlay ─────────────────────────────────────────
-    // Docs: https://adinplay.com/documentation
-    // window.aiptag is pre-initialised in index.html before the async
-    // script loads, so cmd.player is always an array we can push to.
-    const aiptag = window.aiptag;
-
-    if (aiptag && aiptag.adplayer) {
-      setAdState("loading");
-      try {
-        aiptag.cmd.player.push(() => {
-          aiptag.adplayer.startPreRoll({
-            // ✅ Full view — grant the revive
-            onAdComplete: () => {
-              console.log("[Ad] Completed → reviving player");
-              doRevive();
-            },
-            // ❌ Player bailed — do NOT revive
-            onAdSkipped: () => {
-              console.log("[Ad] Skipped → revive denied");
-              setAdState("skipped");
-            },
-            // ⚠ Network / no fill — inform player, don't punish
-            onAdError: (err) => {
-              console.warn("[Ad] Error:", err);
-              setAdState("error");
-            },
-          });
-        });
-      } catch (e) {
-        console.error("[Ad] SDK threw:", e);
-        setAdState("error");
-      }
-      return;
-    }
-
-    // ── OPTION B: AppLixir ─────────────────────────────────────────
-    // Uncomment this block and comment out Option A above.
-    // Get your zoneId from https://applixir.com dashboard.
-    //
-    // if (window.applixir) {
-    //   setAdState("loading");
-    //   window.applixir.showAd({
-    //     zoneId: "YOUR-ZONE-ID",           // ← replace with your zone ID
-    //     onAdComplete: () => {
-    //       console.log("[Ad] AppLixir complete → reviving");
-    //       doRevive();
-    //     },
-    //     onAdSkipped: () => {
-    //       console.log("[Ad] AppLixir skipped");
-    //       setAdState("skipped");
-    //     },
-    //     onAdError: () => {
-    //       console.warn("[Ad] AppLixir error");
-    //       setAdState("error");
-    //     },
-    //   });
-    //   return;
-    // }
-
-    // ── FALLBACK: SDK not loaded (localhost dev / ad blocker) ──────
-    // This only runs when NEITHER SDK is available.
-    // Safe to leave in — it will never fire on a real deployed game
-    // where the script tag in index.html loads correctly.
-    console.warn("[Ad] No SDK found — free revive (dev/blocked mode)");
-    doRevive();
-  }, [adState, doRevive]);
+  // handleRevive is defined above with doRevive
 
   // Keyboard
   useEffect(() => {
@@ -708,13 +695,18 @@ export default function App() {
   const press   = key => () => { keysRef.current[key]=true; };
   const release = key => () => { keysRef.current[key]=false; };
 
-  // ── Game loop ──────────────────────────────────────────────────────────────
+  // ── Game loop — 60 fps locked via delta-time accumulator ─────────────────
+  // Budget Android devices often run RAF at irregular intervals.
+  // We accumulate elapsed ms and step the simulation in fixed 16.67ms chunks
+  // so physics stays consistent regardless of frame timing.
   useEffect(() => {
     if (screen !== "playing") return;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: false }); // alpha:false = faster compositing
     const snd = soundRef.current;
     let laneCd=0, jumpEdge=false;
+    let lastTime=0, accumulator=0;
+    const STEP=1000/60; // fixed 16.67 ms physics step
 
     const spawnEnemy = s => {
       const lane=randI(0,LANE_COUNT-1);
@@ -735,25 +727,18 @@ export default function App() {
       }
     };
 
-    const loop = () => {
+    // ── Physics step — called once per 16.67ms tick ───────────────────────
+    const step = () => {
       const s = stateRef.current;
-      if (!s) return;
-
-      // When paused for revive: keep drawing the frozen frame but skip updates
-      if (!s.running) {
-        const canvas2 = canvasRef.current;
-        if (canvas2) {
-          // Just re-queue — the revive overlay is rendered in React
-          animRef.current = requestAnimationFrame(loop);
-        }
-        return;
-      }
+      if (!s || !s.running) return;
       const k=keysRef.current, p=s.player;
 
-      // Lane
+      // Lane (keyboard + D-pad + tap-to-move)
       if(laneCd>0) laneCd--;
-      if((k["ArrowLeft"]||k["_L"])&&laneCd===0&&p.targetLane>0){ p.targetLane--;laneCd=18; }
-      if((k["ArrowRight"]||k["_R"])&&laneCd===0&&p.targetLane<LANE_COUNT-1){ p.targetLane++;laneCd=18; }
+      if((k["ArrowLeft"]||k["_L"]||k["_tapL"])&&laneCd===0&&p.targetLane>0){ p.targetLane--;laneCd=18; }
+      if((k["ArrowRight"]||k["_R"]||k["_tapR"])&&laneCd===0&&p.targetLane<LANE_COUNT-1){ p.targetLane++;laneCd=18; }
+      // Clear single-frame tap flags
+      k["_tapL"]=false; k["_tapR"]=false;
       p.x=lerp(p.x,ROAD_LEFT+p.targetLane*LANE_WIDTH+(LANE_WIDTH-CAR_W)/2,0.18);
 
       // Forward/Back
@@ -845,8 +830,11 @@ export default function App() {
         if(pt.life<=0) s.particles.splice(i,1);
       }
       if(s.shake>0) s.shake--;
+    }; // end step()
 
-      // ── Draw ────────────────────────────────────────────────────────────────
+    // ── Draw — called every RAF frame ────────────────────────────────────────
+    const draw = (s) => {
+      const p = s.player;
       ctx.save();
       if(s.shake>0) ctx.translate(rand(-s.shake*.6,s.shake*.6),rand(-s.shake*.3,s.shake*.3));
       drawStars(ctx,s.stars,s.roadOffset);
@@ -880,12 +868,38 @@ export default function App() {
         combo:s.combo,jumpReady:p.jumpCooldown===0&&!p.isJumping,
         coins:totalCoins+s.sessionCoins, carName:carData.name });
       ctx.restore();
+    }; // end draw()
 
-      animRef.current=requestAnimationFrame(loop);
+    // ── RAF loop — delta-time accumulator for locked 60fps physics ──────────
+    const loop = (timestamp) => {
+      const s = stateRef.current;
+      if (!s) return;
+
+      // Paused for revive overlay — keep loop alive but skip everything
+      if (!s.running) {
+        animRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
+      // Cap delta to 100ms so a tab-switch doesn't cause a physics explosion
+      const delta = Math.min(timestamp - (lastTime || timestamp), 100);
+      lastTime = timestamp;
+      accumulator += delta;
+
+      // Step physics in fixed 16.67ms chunks
+      while (accumulator >= STEP) {
+        step();
+        accumulator -= STEP;
+      }
+
+      // Draw every frame (interpolation not needed for this game type)
+      draw(s);
+
+      animRef.current = requestAnimationFrame(loop);
     };
 
-    animRef.current=requestAnimationFrame(loop);
-    return ()=>{ cancelAnimationFrame(animRef.current); snd?.stopEngine(); };
+    animRef.current = requestAnimationFrame(loop);
+    return () => { cancelAnimationFrame(animRef.current); snd?.stopEngine(); };
   }, [screen, carData]);
 
   // Garage actions
@@ -923,7 +937,19 @@ export default function App() {
       <div style={{ position:"relative",display:screen==="playing"?"block":"none" }}>
         <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
           style={{ display:"block",borderRadius:16,touchAction:"none",maxWidth:"100vw",
-            boxShadow:"0 0 60px rgba(245,197,24,.25),0 0 120px rgba(231,76,60,.15)" }} />
+            boxShadow:"0 0 60px rgba(245,197,24,.25),0 0 120px rgba(231,76,60,.15)" }}
+          onTouchStart={e => {
+            e.preventDefault();
+            const rect = canvasRef.current.getBoundingClientRect();
+            Array.from(e.changedTouches).forEach(t => {
+              const relX = t.clientX - rect.left;
+              // Left half = move left, right half = move right
+              if (relX < rect.width / 2) keysRef.current["_tapL"] = true;
+              else                        keysRef.current["_tapR"] = true;
+            });
+          }}
+          onTouchEnd={e => { e.preventDefault(); }}
+        />
 
         <div style={{ position:"absolute",bottom:18,left:0,right:0,display:"flex",
           justifyContent:"space-between",alignItems:"flex-end",padding:"0 18px",pointerEvents:"none" }}>
@@ -1038,63 +1064,171 @@ export default function App() {
         )}
       </div>
 
-      {/* ── MENU ── */}
+      {/* ══════════════════════════════════════════════════════════════
+           START SCREEN — Vibrant Indian mobile market UI
+           Bold yellow/red, big PLAY button, high score display
+      ══════════════════════════════════════════════════════════════ */}
       {screen==="menu" && (
-        <div style={{ textAlign:"center",zIndex:10 }}>
-          <div style={{ fontSize:"clamp(42px,10vw,72px)",fontWeight:900,letterSpacing:"0.05em",
-            background:"linear-gradient(135deg,#f5c518 0%,#e74c3c 50%,#9b59b6 100%)",
-            WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",
-            marginBottom:8,lineHeight:1.1,filter:"drop-shadow(0 0 30px rgba(245,197,24,0.5))" }}>
+        <div style={{
+          position:"fixed", inset:0, zIndex:50,
+          background:"linear-gradient(160deg,#ff6b00 0%,#ff0055 50%,#7c00ff 100%)",
+          display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center",
+          fontFamily:"'Courier New',monospace",
+        }}>
+          {/* Animated title */}
+          <div style={{
+            fontSize:"clamp(48px,12vw,80px)", fontWeight:900,
+            color:"#ffe600", letterSpacing:"0.04em", lineHeight:1,
+            textShadow:"0 4px 0 #b30000, 0 8px 30px rgba(0,0,0,0.5)",
+            marginBottom:6, textAlign:"center",
+          }}>
             INFINITE<br/>RACER
           </div>
-          <div style={{ color:"#aaa",fontSize:14,marginBottom:8,letterSpacing:"0.12em" }}>DODGE. JUMP. SURVIVE.</div>
-
-          <div style={{ display:"flex",gap:24,justifyContent:"center",marginBottom:32 }}>
-            <div style={{ color:"#f5c518",fontSize:13 }}>🏆 BEST: {highScore.toString().padStart(6,"0")}</div>
-            <div style={{ color:"#f5c518",fontSize:13 }}>🪙 {totalCoins} coins</div>
+          <div style={{
+            color:"rgba(255,255,255,0.85)", fontSize:"clamp(12px,3vw,16px)",
+            letterSpacing:"0.25em", marginBottom:40,
+          }}>
+            DODGE · JUMP · SURVIVE
           </div>
 
-          <div style={{ display:"flex",gap:12,justifyContent:"center",marginBottom:20 }}>
-            <button onClick={startGame} style={{ ...btn,fontSize:22,padding:"18px 56px",
-              background:"linear-gradient(135deg,#e74c3c,#c0392b)",color:"#fff",
-              boxShadow:"0 0 30px rgba(231,76,60,.6)" }}>▶ RACE</button>
+          {/* High score badge */}
+          <div style={{
+            background:"rgba(0,0,0,0.35)", border:"2px solid #ffe600",
+            borderRadius:16, padding:"12px 32px", marginBottom:40,
+            display:"flex", flexDirection:"column", alignItems:"center", gap:4,
+          }}>
+            <div style={{ color:"#ffe600", fontSize:11, letterSpacing:"0.2em" }}>HIGH SCORE</div>
+            <div style={{ color:"#fff", fontSize:34, fontWeight:900 }}>
+              {highScore.toString().padStart(6,"0")}
+            </div>
           </div>
 
-          <div style={{ display:"flex",gap:12,justifyContent:"center",marginBottom:28 }}>
-            <button onClick={()=>setModal("garage")} style={{ ...btn,padding:"12px 28px",fontSize:14,
-              background:"rgba(155,89,182,0.2)",color:"#9b59b6",border:"1px solid #9b59b640" }}>🏎 GARAGE</button>
-            <button onClick={()=>setModal("leaderboard")} style={{ ...btn,padding:"12px 28px",fontSize:14,
-              background:"rgba(245,197,24,0.1)",color:"#f5c518",border:"1px solid #f5c51840" }}>🏆 LEADERBOARD</button>
+          {/* PLAY button */}
+          <button onClick={() => startGame(false)} style={{
+            padding:"22px 80px", fontSize:"clamp(20px,5vw,28px)", fontWeight:900,
+            background:"#ffe600", color:"#1a0000",
+            border:"none", borderRadius:60, cursor:"pointer",
+            fontFamily:"'Courier New',monospace", letterSpacing:"0.12em",
+            boxShadow:"0 6px 0 #b38f00, 0 10px 40px rgba(255,230,0,0.4)",
+            transform:"translateY(0)",
+            transition:"transform 0.1s, box-shadow 0.1s",
+            marginBottom:24,
+          }}
+            onPointerDown={e=>e.currentTarget.style.transform="translateY(4px)"}
+            onPointerUp={e=>e.currentTarget.style.transform="translateY(0)"}
+          >
+            ▶ PLAY
+          </button>
+
+          {/* Coins + Garage row */}
+          <div style={{ display:"flex", gap:16, marginBottom:20 }}>
+            <div style={{
+              background:"rgba(0,0,0,0.3)", borderRadius:30, padding:"10px 22px",
+              color:"#ffe600", fontSize:15, fontWeight:700,
+            }}>🪙 {totalCoins}</div>
+            <button onClick={()=>setModal("garage")} style={{
+              background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)",
+              borderRadius:30, padding:"10px 22px", color:"#fff",
+              fontSize:15, fontWeight:700, cursor:"pointer",
+              fontFamily:"'Courier New',monospace",
+            }}>🏎 GARAGE</button>
+            <button onClick={()=>setModal("leaderboard")} style={{
+              background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)",
+              borderRadius:30, padding:"10px 22px", color:"#fff",
+              fontSize:15, fontWeight:700, cursor:"pointer",
+              fontFamily:"'Courier New',monospace",
+            }}>🏆</button>
           </div>
 
-          <div style={{ color:"#555",fontSize:11,lineHeight:2 }}>
-            ← → LANES &nbsp;|&nbsp; ↑ ↓ FORWARD/BACK &nbsp;|&nbsp; SPACE JUMP<br/>
-            COLLECT 🪙 COINS → UNLOCK FASTER CARS IN GARAGE
+          <div style={{ color:"rgba(255,255,255,0.45)", fontSize:11, letterSpacing:"0.1em", textAlign:"center" }}>
+            TAP LEFT / RIGHT HALF OF SCREEN TO STEER<br/>
+            SWIPE UP FOR JUMP · D-PAD ON SCREEN
           </div>
         </div>
       )}
 
-      {/* ── GAME OVER ── */}
+      {/* ══════════════════════════════════════════════════════════════
+           GAME OVER SCREEN — Final score + Retry + Revive
+      ══════════════════════════════════════════════════════════════ */}
       {screen==="gameover" && (
-        <div style={{ textAlign:"center",zIndex:10,background:"rgba(5,5,15,0.92)",
-          border:"1px solid #e74c3c44",borderRadius:20,padding:"40px 56px",
-          boxShadow:"0 0 80px rgba(231,76,60,.3)" }}>
-          <div style={{ fontSize:52,fontWeight:900,color:"#e74c3c",
-            filter:"drop-shadow(0 0 20px #e74c3c)",marginBottom:12 }}>GAME OVER</div>
-          <div style={{ color:"#fff",fontSize:18,marginBottom:4 }}>
-            SCORE: <span style={{ color:"#f5c518",fontWeight:700,fontSize:28 }}>{finalScore.toString().padStart(6,"0")}</span>
-          </div>
-          {finalScore>=highScore&&finalScore>0&&<div style={{ color:"#f5c518",fontSize:13,marginBottom:4 }}>🏆 NEW HIGH SCORE!</div>}
-          <div style={{ color:"#888",fontSize:12,marginBottom:4 }}>BEST: {highScore.toString().padStart(6,"0")}</div>
-          <div style={{ color:"#f5c518",fontSize:13,marginBottom:28 }}>🪙 Total coins: {totalCoins}</div>
+        <div style={{
+          position:"fixed", inset:0, zIndex:50,
+          background:"rgba(5,0,15,0.96)",
+          display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center",
+          fontFamily:"'Courier New',monospace",
+          gap:0,
+        }}>
+          {/* GAME OVER header */}
+          <div style={{
+            fontSize:"clamp(36px,10vw,60px)", fontWeight:900,
+            color:"#ff0055", letterSpacing:"0.06em",
+            textShadow:"0 0 30px #ff0055, 0 4px 0 #7a0028",
+            marginBottom:8,
+          }}>GAME OVER</div>
 
-          <div style={{ display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap" }}>
-            <button onClick={startGame} style={{ ...btn,background:"linear-gradient(135deg,#e74c3c,#c0392b)",
-              color:"#fff",boxShadow:"0 0 20px rgba(231,76,60,.5)" }}>▶ RETRY</button>
-            <button onClick={()=>setModal("leaderboard")} style={{ ...btn,padding:"16px 24px",
-              background:"rgba(245,197,24,0.1)",color:"#f5c518",border:"1px solid #f5c51840" }}>🏆 LEADERBOARD</button>
-            <button onClick={()=>setScreen("menu")} style={{ ...btn,padding:"16px 24px",
-              background:"transparent",color:"#aaa",border:"1px solid #444" }}>MENU</button>
+          {/* Score */}
+          <div style={{ color:"rgba(255,255,255,0.6)", fontSize:13, letterSpacing:"0.2em", marginBottom:4 }}>
+            FINAL SCORE
+          </div>
+          <div style={{
+            fontSize:"clamp(40px,11vw,68px)", fontWeight:900, color:"#ffe600",
+            textShadow:"0 0 20px rgba(255,230,0,0.6)", marginBottom:6,
+          }}>
+            {finalScore.toString().padStart(6,"0")}
+          </div>
+
+          {finalScore >= highScore && finalScore > 0 && (
+            <div style={{
+              background:"linear-gradient(90deg,#ff6b00,#ffe600)",
+              color:"#1a0000", fontWeight:900, fontSize:13,
+              padding:"6px 20px", borderRadius:20, marginBottom:12,
+              letterSpacing:"0.1em",
+            }}>🏆 NEW HIGH SCORE!</div>
+          )}
+
+          <div style={{ color:"#555", fontSize:12, marginBottom:28 }}>
+            BEST: {highScore.toString().padStart(6,"0")} &nbsp;·&nbsp; 🪙 {totalCoins} coins
+          </div>
+
+          {/* Buttons */}
+          <div style={{ display:"flex", flexDirection:"column", gap:14, alignItems:"center", width:"100%", maxWidth:320 }}>
+            {/* RETRY — big yellow */}
+            <button onClick={() => startGame(true)} style={{
+              width:"100%", padding:"20px 0", fontSize:22, fontWeight:900,
+              background:"#ffe600", color:"#1a0000",
+              border:"none", borderRadius:50, cursor:"pointer",
+              fontFamily:"'Courier New',monospace", letterSpacing:"0.1em",
+              boxShadow:"0 5px 0 #b38f00, 0 8px 30px rgba(255,230,0,0.3)",
+            }}>▶ RETRY</button>
+
+            {/* REVIVE — green, only if not used */}
+            {!reviveUsed.current && (
+              <button onClick={() => { stateRef.current && (stateRef.current.running=false); setIsGameOver(true); setScreen("playing"); }} style={{
+                width:"100%", padding:"16px 0", fontSize:17, fontWeight:700,
+                background:"linear-gradient(135deg,#00c853,#009624)",
+                color:"#fff", border:"none", borderRadius:50, cursor:"pointer",
+                fontFamily:"'Courier New',monospace", letterSpacing:"0.08em",
+                boxShadow:"0 4px 0 #006b17, 0 8px 24px rgba(0,200,83,0.3)",
+              }}>📺 WATCH AD & REVIVE</button>
+            )}
+
+            {/* Leaderboard + Menu row */}
+            <div style={{ display:"flex", gap:12, width:"100%" }}>
+              <button onClick={()=>setModal("leaderboard")} style={{
+                flex:1, padding:"14px 0", fontSize:14, fontWeight:700,
+                background:"rgba(255,230,0,0.1)", color:"#ffe600",
+                border:"1px solid #ffe60040", borderRadius:40, cursor:"pointer",
+                fontFamily:"'Courier New',monospace",
+              }}>🏆 BOARD</button>
+              <button onClick={()=>setScreen("menu")} style={{
+                flex:1, padding:"14px 0", fontSize:14, fontWeight:700,
+                background:"rgba(255,255,255,0.06)", color:"#888",
+                border:"1px solid #333", borderRadius:40, cursor:"pointer",
+                fontFamily:"'Courier New',monospace",
+              }}>MENU</button>
+            </div>
           </div>
         </div>
       )}
