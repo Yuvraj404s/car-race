@@ -11,34 +11,70 @@ const ROAD_W   = CANVAS_W;              // full-width road, no grass
 const LANE_W   = ROAD_W / LANE_COUNT;
 const ROAD_L   = 0;
 const Y_MIN = 60, Y_MAX = CANVAS_H - CAR_H - 10, Y_DEFAULT = CANVAS_H - CAR_H - 20;
-const JUMP_POWER = -13, GRAVITY = 0.6, JUMP_CD = 40;
+const JUMP_POWER = -22, GRAVITY = 0.55, JUMP_CD = 50; // higher arc, longer air time
 
-// ─── Car Catalog — each car has a unique body TYPE driving the shape renderer ──
-// type: "coupe" | "muscle" | "formula" | "cyber"
+// ─── Car Catalog — sprite-based real cars from cars.png atlas ────────────────
 const CARS = [
-  { id:"viper",   name:"VIPER GT",   cost:0,   speedBonus:0,   type:"coupe",
+  { id:"lambo",   name:"LAMBO",   cost:0,   speedBonus:0,   sprite:"lambo",
     primary:"#e74c3c", accent:"#ff9999", glow:"255,80,80",
-    desc:"Classic sports coupe" },
-  { id:"phantom", name:"PHANTOM",    cost:80,  speedBonus:1.2, type:"muscle",
-    primary:"#9b59b6", accent:"#d7aefb", glow:"180,80,255",
-    desc:"Brawny muscle car" },
-  { id:"cyber",   name:"CYBER-X",    cost:200, speedBonus:2.5, type:"formula",
-    primary:"#00cfff", accent:"#aaf0ff", glow:"0,200,255",
-    desc:"Low Formula racer" },
-  { id:"shadow",  name:"SHADOW MK2", cost:400, speedBonus:4.0, type:"cyber",
+    desc:"Lamborghini — free starter" },
+  { id:"camaro",  name:"CAMARO",  cost:80,  speedBonus:1.2, sprite:"camaro",
+    primary:"#f39c12", accent:"#ffd080", glow:"243,156,18",
+    desc:"Chevrolet Camaro" },
+  { id:"bmw",     name:"BMW M3",  cost:200, speedBonus:2.5, sprite:"bmw",
+    primary:"#3498db", accent:"#88ccff", glow:"52,152,219",
+    desc:"BMW M3 — sport sedan" },
+  { id:"lexus",   name:"LEXUS",   cost:400, speedBonus:4.0, sprite:"lexus",
     primary:"#2ecc71", accent:"#aaffcc", glow:"0,220,100",
-    desc:"Futuristic concept" },
+    desc:"Lexus — luxury speed" },
 ];
-// Enemy cars use random types for visual variety
+// Enemy pool — varied real cars from the sheet
 const ENEMY_POOL = [
-  { primary:"#3498db", accent:"#88ccff", glow:"52,152,219",  type:"coupe"   },
-  { primary:"#e67e22", accent:"#ffbb66", glow:"230,126,34",  type:"muscle"  },
-  { primary:"#e74c3c", accent:"#ff8888", glow:"231,76,60",   type:"formula" },
-  { primary:"#f1c40f", accent:"#fff0aa", glow:"241,196,15",  type:"coupe"   },
-  { primary:"#1abc9c", accent:"#66ffdd", glow:"26,188,156",  type:"cyber"   },
+  { sprite:"lancer",   primary:"#e74c3c", accent:"#ff8888", glow:"231,76,60"   },
+  { sprite:"pickup",   primary:"#8e44ad", accent:"#cc88ff", glow:"142,68,173"  },
+  { sprite:"suv",      primary:"#27ae60", accent:"#66ffaa", glow:"39,174,96"   },
+  { sprite:"taxi",     primary:"#f1c40f", accent:"#ffe066", glow:"241,196,15"  },
+  { sprite:"wrangler", primary:"#2980b9", accent:"#66aaff", glow:"41,128,185"  },
+  { sprite:"mustang2", primary:"#c0392b", accent:"#ff6655", glow:"192,57,43"   },
+  { sprite:"gwagon",   primary:"#16a085", accent:"#44ddcc", glow:"22,160,133"  },
+  { sprite:"porsche",  primary:"#d35400", accent:"#ff8844", glow:"211,84,0"    },
 ];
 
 const API = "/api";
+
+// ─── Sprite Sheet Atlas ──────────────────────────────────────────────────────
+// Coordinates from cars.atlas — {x, y, w, h} on the 512px sheet
+const ATLAS = {
+  // Player cars
+  lambo:      { x:234, y:101, w:27, h:46 },
+  camaro:     { x:87,  y:134, w:26, h:48 },
+  bmw:        { x:179, y:89,  w:25, h:47 },
+  lexus:      { x:122, y:85,  w:26, h:48 },
+  // Enemies
+  lancer:     { x:292, y:100, w:26, h:47 },
+  pickup:     { x:57,  y:131, w:28, h:51 },
+  suv:        { x:380, y:204, w:28, h:50 },
+  taxi:       { x:318, y:149, w:26, h:48 },
+  wrangler:   { x:374, y:155, w:24, h:46 },
+  porsche:    { x:258, y:58,  w:24, h:41 },
+  mustang2:   { x:66,  y:80,  w:26, h:49 },
+  gwagon:     { x:150, y:89,  w:27, h:47 },
+};
+
+// Sprite image — loaded once, shared across all draw calls
+let _spriteImg = null;
+let _spriteReady = false;
+function getSpriteSheet() {
+  if (_spriteImg) return _spriteImg;
+  _spriteImg = new Image();
+  _spriteImg.onload = () => { _spriteReady = true; };
+  _spriteImg.src = "/cars.png";
+  return _spriteImg;
+}
+// Pre-load immediately
+getSpriteSheet();
+
+
 
 // ─── Ad Break / Monetisation ──────────────────────────────────────────────────
 let _deathCount = 0;
@@ -521,27 +557,52 @@ function drawUnderglow(ctx, bw, bh, gr) {
   ctx.shadowBlur=0;
 }
 
-// ── Main dispatch ─────────────────────────────────────────────────────────────
+// ── Main draw: sprite-based with glow + shadow ────────────────────────────────
 function drawCar(ctx, x, y, w, h, car, isPlayer, flip, jumpZ=0) {
-  const shadowScale=Math.max(0.1,1-jumpZ/100);
+  const shadowScale = Math.max(0.1, 1 - jumpZ/110);
+  const img = getSpriteSheet();
+  const sp  = ATLAS[car.sprite] || ATLAS.lambo;
+  const gr  = car.glow || "200,200,200";
 
-  ctx.save(); ctx.translate(x+w/2, y+h/2);
-  carShadow(ctx, w, h, jumpZ, shadowScale);
+  // ── Ground shadow ──
+  ctx.save();
+  ctx.translate(x+w/2, y+h*0.88 + jumpZ*0.18);
+  ctx.globalAlpha = 0.45 * shadowScale;
+  const sg = ctx.createRadialGradient(0,0,1,0,0,w*0.55*shadowScale);
+  sg.addColorStop(0,"rgba(0,0,0,0.9)"); sg.addColorStop(1,"transparent");
+  ctx.fillStyle=sg; ctx.beginPath();
+  ctx.ellipse(0,0,w*0.52*shadowScale,7*shadowScale,0,0,Math.PI*2); ctx.fill();
   ctx.restore();
 
+  // ── Car body ──
   ctx.save();
-  ctx.translate(x+w/2, y+h/2-jumpZ);
+  ctx.translate(x+w/2, y+h/2 - jumpZ);
   if(flip) ctx.scale(1,-1);
-  ctx.globalAlpha=1;
 
-  const {primary:p, accent:a, glow:gr, type} = car;
-  switch(type){
-    case "muscle":  drawMuscle (ctx,w,h,p,a,gr,isPlayer); break;
-    case "formula": drawFormula(ctx,w,h,p,a,gr,isPlayer); break;
-    case "cyber":   drawCyber  (ctx,w,h,p,a,gr,isPlayer); break;
-    default:        drawCoupe  (ctx,w,h,p,a,gr,isPlayer); break;
+  if(_spriteReady && img.complete) {
+    // Glow halo behind sprite
+    ctx.shadowColor = `rgba(${gr},0.7)`;
+    ctx.shadowBlur  = isPlayer ? 14 : 8;
+    // Draw sprite scaled to fit w×h
+    ctx.drawImage(img,
+      sp.x, sp.y, sp.w, sp.h,          // source rect
+      -w/2, -h/2, w, h                  // dest rect (centred)
+    );
+    ctx.shadowBlur = 0;
+  } else {
+    // Fallback coloured rect while image loads
+    ctx.fillStyle = car.primary || "#e74c3c";
+    ctx.beginPath(); ctx.roundRect(-w/2,-h/2,w,h,6); ctx.fill();
   }
-  carJumpAura(ctx,w,h,jumpZ,gr);
+
+  // Jump aura
+  if(jumpZ > 8) {
+    const alpha = Math.min(jumpZ/45, 0.9);
+    ctx.strokeStyle = `rgba(${gr},${alpha})`; ctx.lineWidth=2.5;
+    ctx.shadowColor = `rgb(${gr})`; ctx.shadowBlur=18;
+    ctx.beginPath(); ctx.ellipse(0,h/2-4,w/2+7,9,0,0,Math.PI*2); ctx.stroke();
+    ctx.shadowBlur=0;
+  }
   ctx.restore();
 }
 
@@ -751,24 +812,30 @@ function GarageModal({ coins, unlockedCars, selectedCar, onBuy, onSelect, onClos
   const [preview, setPreview] = useState(null);
   const cvRef = useRef(null);
 
+  // Redraw preview every frame so sprite loads even if image wasn't ready
   useEffect(()=>{
-    const cv=cvRef.current; if(!cv) return;
-    const ctx=cv.getContext("2d");
-    const car=preview||CARS.find(c=>c.id===selectedCar)||CARS[0];
-    ctx.clearRect(0,0,cv.width,cv.height);
-    // Subtle grid bg
-    ctx.fillStyle="rgba(10,14,35,0.0)"; ctx.fillRect(0,0,cv.width,cv.height);
-    ctx.strokeStyle="rgba(0,200,255,0.07)"; ctx.lineWidth=1;
-    for(let gx=0;gx<cv.width;gx+=20){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,cv.height); ctx.stroke(); }
-    for(let gy=0;gy<cv.height;gy+=20){ ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(cv.width,gy); ctx.stroke(); }
-    // Preview — use type-specific proportions
-    const isFormula=car.type==="formula";
-    const pw=isFormula?CAR_W*1.8:CAR_W*2.4, ph=CAR_H*2.4;
-    const px=cv.width/2-pw/2, py=cv.height/2-ph/2-6;
-    drawCar(ctx, px, py, pw, ph, car, true, false, 0);
-    // Label
-    ctx.fillStyle=car.accent; ctx.font="bold 11px 'Courier New',monospace";
-    ctx.textAlign="center"; ctx.fillText(car.name, cv.width/2, cv.height-8);
+    let rafId;
+    const render = () => {
+      const cv=cvRef.current; if(!cv) return;
+      const ctx=cv.getContext("2d");
+      const car=preview||CARS.find(c=>c.id===selectedCar)||CARS[0];
+      ctx.clearRect(0,0,cv.width,cv.height);
+      // Grid bg
+      ctx.fillStyle="rgba(8,12,32,0.95)"; ctx.fillRect(0,0,cv.width,cv.height);
+      ctx.strokeStyle="rgba(0,200,255,0.06)"; ctx.lineWidth=1;
+      for(let gx=0;gx<cv.width;gx+=24){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,cv.height); ctx.stroke(); }
+      for(let gy=0;gy<cv.height;gy+=24){ ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(cv.width,gy); ctx.stroke(); }
+      // Draw car large and centred
+      const pw = CAR_W*3.2, ph = CAR_H*3.2;
+      drawCar(ctx, cv.width/2-pw/2, cv.height/2-ph/2-8, pw, ph, car, true, false, 0);
+      // Name label
+      ctx.fillStyle=car.accent||"#fff"; ctx.font="bold 12px 'Courier New',monospace";
+      ctx.textAlign="center"; ctx.fillText(car.name, cv.width/2, cv.height-6);
+      // Keep refreshing until sprite is loaded
+      if(!_spriteReady) rafId = requestAnimationFrame(render);
+    };
+    render();
+    return () => cancelAnimationFrame(rafId);
   },[preview,selectedCar]);
 
   return(
@@ -873,8 +940,8 @@ export default function App() {
   const [finalScore,   setFinal]    = useState(0);
   const [highScore,    setHS]       = useState(()=>parseInt(localStorage.getItem("racer_hs")||"0"));
   const [totalCoins,   setCoins]    = useState(()=>parseInt(localStorage.getItem("racer_coins")||"0"));
-  const [unlockedCars, setUnlocked] = useState(()=>JSON.parse(localStorage.getItem("racer_unlocked")||'["viper"]'));
-  const [selectedCar,  setSelected] = useState(()=>localStorage.getItem("racer_car")||"viper");
+  const [unlockedCars, setUnlocked] = useState(()=>JSON.parse(localStorage.getItem("racer_unlocked")||'["lambo"]'));
+  const [selectedCar,  setSelected] = useState(()=>localStorage.getItem("racer_car")||"lambo");
   const [modal,        setModal]    = useState(null);
   const [isReviving,   setReviving] = useState(false);
   const [adState,      setAdState]  = useState("idle");
@@ -1254,24 +1321,33 @@ export default function App() {
         fontFamily:"'Courier New',monospace", userSelect:"none", overflow:"hidden",
         touchAction:"none" }}>
 
-      {/* ── Canvas + Pause Button (always rendered, hidden when not playing) ── */}
+      {/* ── Canvas (CSS-scaled, no transform) + Pause Button ── */}
+      {(screen===GS.PLAYING||screen===GS.PAUSED) && (
       <div style={{
         position:"relative",
-        display: screen===GS.PLAYING||screen===GS.PAUSED ? "block" : "none",
-        transform:`scale(${scale})`, transformOrigin:"top center",
+        width: CANVAS_W*scale, height: CANVAS_H*scale,
+        flexShrink:0,
       }}>
         <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
-          style={{ display:"block", borderRadius:0, touchAction:"none",
-            boxShadow:"0 0 80px rgba(0,200,255,0.15), 0 0 200px rgba(0,100,255,0.08)" }}/>
+          style={{
+            display:"block", touchAction:"none",
+            width: CANVAS_W*scale, height: CANVAS_H*scale,
+            boxShadow:"0 0 80px rgba(0,200,255,0.15)",
+          }}/>
 
-        {/* Pause button — top right, minimal */}
-        <button onClick={togglePause} style={{
-          position:"absolute", top:12, right:12, width:36, height:36,
-          background:"rgba(5,10,30,0.6)", border:"1px solid rgba(0,200,255,0.25)",
-          borderRadius:"50%", color:"rgba(0,200,255,0.8)", fontSize:14, cursor:"pointer",
-          display:"flex", alignItems:"center", justifyContent:"center",
-          backdropFilter:"blur(8px)", zIndex:10,
-        }}>⏸</button>
+        {/* Pause button — always on top, uses absolute within real pixel bounds */}
+        <button
+          onClick={e=>{ e.stopPropagation(); togglePause(); }}
+          onTouchEnd={e=>{ e.preventDefault(); e.stopPropagation(); togglePause(); }}
+          style={{
+            position:"absolute",
+            top: 12*scale, right: 12*scale,
+            width: 44, height: 44,
+            background:"rgba(5,10,30,0.75)", border:"1px solid rgba(0,200,255,0.35)",
+            borderRadius:"50%", color:"rgba(0,200,255,0.9)", fontSize:16, cursor:"pointer",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            backdropFilter:"blur(8px)", zIndex:50, touchAction:"manipulation",
+          }}>⏸</button>
 
         {/* Touch control hint zones — invisible but labelled, fades after 4s */}
         {screen===GS.PLAYING && !isReviving && (
@@ -1315,9 +1391,13 @@ export default function App() {
             <div style={{fontSize:28,fontWeight:900,color:"#ff3366",letterSpacing:"0.08em",textShadow:"0 0 20px #ff3366"}}>YOU DIED</div>
             <div style={{color:"rgba(255,200,0,0.9)",fontSize:14}}>SCORE: <strong>{finalScore.toString().padStart(6,"0")}</strong></div>
             {adState==="idle"&&!reviveUsed.current&&(
-              <button onClick={handleRevive} style={{padding:"14px 40px",fontSize:17,fontWeight:900,
-                background:"linear-gradient(135deg,#00c853,#00691a)",color:"#fff",border:"none",
-                borderRadius:40,cursor:"pointer",boxShadow:"0 0 24px rgba(0,200,83,0.5)"}}>
+              <button
+                onClick={e=>{e.stopPropagation();handleRevive();}}
+                onTouchEnd={e=>{e.preventDefault();e.stopPropagation();handleRevive();}}
+                style={{padding:"14px 40px",fontSize:17,fontWeight:900,
+                  background:"linear-gradient(135deg,#00c853,#00691a)",color:"#fff",border:"none",
+                  borderRadius:40,cursor:"pointer",boxShadow:"0 0 24px rgba(0,200,83,0.5)",
+                  touchAction:"manipulation",minHeight:50}}>
                 📺 WATCH AD → REVIVE
               </button>
             )}
@@ -1325,11 +1405,21 @@ export default function App() {
             {(adState==="skipped"||adState==="error")&&(
               <div style={{textAlign:"center"}}>
                 <div style={{color:"#ff6600",fontSize:12,marginBottom:8}}>{adState==="skipped"?"Ad skipped":"No ad available"}</div>
-                <button onClick={()=>setAdState("idle")} style={{padding:"10px 28px",fontSize:13,fontWeight:700,background:"rgba(255,255,255,0.08)",color:"#aaa",border:"1px solid #333",borderRadius:20,cursor:"pointer"}}>Retry</button>
+                <button
+                  onClick={e=>{e.stopPropagation();setAdState("idle");}}
+                  onTouchEnd={e=>{e.preventDefault();e.stopPropagation();setAdState("idle");}}
+                  style={{padding:"12px 28px",fontSize:13,fontWeight:700,background:"rgba(255,255,255,0.08)",color:"#aaa",border:"1px solid #333",borderRadius:20,cursor:"pointer",touchAction:"manipulation",minHeight:44}}>
+                  Retry
+                </button>
               </div>
             )}
             <div style={{color:"rgba(255,255,255,0.25)",fontSize:10}}>ad watched = revive granted</div>
-            <button onClick={triggerGameOver} style={{padding:"8px 24px",fontSize:12,background:"transparent",color:"rgba(255,255,255,0.25)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:16,cursor:"pointer"}}>End Run</button>
+            <button
+              onClick={e=>{e.stopPropagation();triggerGameOver();}}
+              onTouchEnd={e=>{e.preventDefault();e.stopPropagation();triggerGameOver();}}
+              style={{padding:"12px 28px",fontSize:13,background:"transparent",color:"rgba(255,255,255,0.35)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:16,cursor:"pointer",touchAction:"manipulation",minHeight:44}}>
+              End Run
+            </button>
           </div>
         )}
 
@@ -1363,6 +1453,7 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
 
       {/* ══════════════════ START MENU ══════════════════ */}
       {screen===GS.START_MENU&&(
