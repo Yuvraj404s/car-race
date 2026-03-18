@@ -545,6 +545,54 @@ function drawCar(ctx, x, y, w, h, car, isPlayer, flip, jumpZ=0) {
   ctx.restore();
 }
 
+function drawRoad(ctx, offset) {
+  // Fill entire canvas first — prevents black on any device
+  ctx.fillStyle="#12122a"; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  // Sky upper 42%
+  const skyG=ctx.createLinearGradient(0,0,0,CANVAS_H*0.42);
+  skyG.addColorStop(0,"#0d1235"); skyG.addColorStop(1,"#181a38");
+  ctx.fillStyle=skyG; ctx.fillRect(0,0,CANVAS_W,CANVAS_H*0.42);
+
+  // Horizon glow
+  const horizG=ctx.createLinearGradient(0,CANVAS_H*0.3,0,CANVAS_H*0.5);
+  horizG.addColorStop(0,"transparent"); horizG.addColorStop(0.5,"rgba(80,60,200,0.2)"); horizG.addColorStop(1,"transparent");
+  ctx.fillStyle=horizG; ctx.fillRect(0,CANVAS_H*0.3,CANVAS_W,CANVAS_H*0.2);
+
+  // Road surface lower 62%
+  const roadG=ctx.createLinearGradient(0,CANVAS_H*0.38,0,CANVAS_H);
+  roadG.addColorStop(0,"#19192e"); roadG.addColorStop(1,"#13132a");
+  ctx.fillStyle=roadG; ctx.fillRect(0,CANVAS_H*0.38,CANVAS_W,CANVAS_H*0.62);
+
+  // Horizontal grid lines
+  ctx.strokeStyle="rgba(100,100,200,0.13)"; ctx.lineWidth=1; ctx.setLineDash([16,16]);
+  for(let row=0;row<CANVAS_H;row+=38){
+    const yy=(row+offset*0.72)%CANVAS_H;
+    ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(CANVAS_W,yy); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Lane dividers with glow
+  for(let ln=1;ln<LANE_COUNT;ln++){
+    const lx=ROAD_L+ln*LANE_W;
+    const dashLen=48,gap=32,period=dashLen+gap;
+    ctx.strokeStyle="rgba(140,210,255,0.8)"; ctx.lineWidth=2.5;
+    ctx.shadowColor="rgba(0,180,255,0.9)"; ctx.shadowBlur=8;
+    ctx.setLineDash([dashLen,gap]);
+    ctx.lineDashOffset=-(offset%period);
+    ctx.beginPath(); ctx.moveTo(lx,0); ctx.lineTo(lx,CANVAS_H); ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.shadowBlur=0;
+
+  // Edge rails
+  [0,CANVAS_W].forEach(ex=>{
+    ctx.strokeStyle="rgba(100,160,255,0.75)"; ctx.lineWidth=3;
+    ctx.shadowColor="rgba(60,120,255,0.9)"; ctx.shadowBlur=14;
+    ctx.beginPath(); ctx.moveTo(ex,0); ctx.lineTo(ex,CANVAS_H); ctx.stroke();
+  });
+  ctx.shadowBlur=0;
+}
+
 function drawParticles(ctx, particles) {
   particles.forEach(p=>{
     ctx.globalAlpha=p.life*0.9;
@@ -955,9 +1003,10 @@ export default function App() {
 
     const spawnEnemy=s=>{
       const lane=randI(0,LANE_COUNT-1);
+      // Enemy pool entry IS the car descriptor — spread directly, no nested .colors
+      const pool=ENEMY_POOL[randI(0,ENEMY_POOL.length-1)];
       s.enemies.push({ x:ROAD_L+lane*LANE_W+(LANE_W-CAR_W)/2, y:-CAR_H-20, lane,
-        speed:rand(s.speed*0.4,s.speed*0.72),
-        colors:ENEMY_POOL[randI(0,ENEMY_POOL.length-1)] });
+        speed:rand(s.speed*0.4,s.speed*0.72), ...pool });
     };
     const spawnCoin=s=>{ const lane=randI(0,LANE_COUNT-1); s.coins.push({x:ROAD_L+lane*LANE_W+LANE_W/2,y:-20,r:13}); };
     const burst=(x,y,color,n=12)=>{
@@ -1044,7 +1093,7 @@ export default function App() {
             s.enemies.splice(i,1);
             s.lives--;s.invincible=120;s.shake=16;s.combo=1;
             burst(p.x+CAR_W/2,p.y+CAR_H/2,carData.primary,18);
-            burst(e.x+CAR_W/2,e.y+CAR_H/2,e.colors.primary,14);
+            burst(e.x+CAR_W/2,e.y+CAR_H/2,e.primary,14);
             snd?.playCrash();
             if(s.lives<=0){
               s.running=false; snd?.stopEngine();
@@ -1072,7 +1121,7 @@ export default function App() {
       drawRoad(ctx,s.roadOffset);
       drawSpeedLines(ctx,s.speed);
       s.coins.forEach(c=>drawCoin(ctx,c.x,c.y,c.r,s.coinPulse));
-      s.enemies.forEach(e=>drawCar(ctx,e.x,e.y,CAR_W,CAR_H,e.colors,false,true,0));
+      s.enemies.forEach(e=>drawCar(ctx,e.x,e.y,CAR_W,CAR_H,e,false,true,0));
       if(s.invincible===0||Math.floor(s.invincible/7)%2===0){
         drawCar(ctx,p.x,p.y,CAR_W,CAR_H,carData,true,false,p.jumpZ);
         if(s.speed>5&&p.jumpZ<4){
@@ -1097,7 +1146,7 @@ export default function App() {
     };
     animRef.current=requestAnimationFrame(loop);
     return()=>{ cancelAnimationFrame(animRef.current); snd?.stopEngine(); };
-  },[screen,carData,totalCoins,triggerGameOver]);
+  },[screen,carData,totalCoins]); // triggerGameOver uses refs, no need in deps
 
   // Garage
   const buycar=id=>{ const car=CARS.find(c=>c.id===id); if(!car||totalCoins<car.cost) return;
